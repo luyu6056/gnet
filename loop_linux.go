@@ -6,25 +6,12 @@
 
 package gnet
 
-import "github.com/panjf2000/gnet/internal/netpoll"
-
-func (el *eventloop) handleEvent(fd int, ev uint32) error {
-	if c, ok := el.connections[fd]; ok {
-		switch c.outboundBuffer.IsEmpty() {
-		// Don't change the ordering of processing EPOLLOUT | EPOLLRDHUP / EPOLLIN unless you're 100%
-		// sure what you're doing!
-		// Re-ordering can easily introduce bugs and bad side-effects, as I found out painfully in the past.
-		case false:
-			if ev&netpoll.OutEvents != 0 {
-				return el.loopWrite(c)
-			}
-			return nil
-		case true:
-			if ev&netpoll.InEvents != 0 {
-				return el.loopRead(c)
-			}
-			return nil
+func (lp *eventloop) handleEvent(fd int, ev uint32) error {
+	index := fd / lp.svr.subLoopGroup.len()
+	if index < len(lp.connections) {
+		if c := lp.connections[index]; c != nil {
+			return lp.loopIn(c)
 		}
 	}
-	return el.loopAccept(fd)
+	return lp.loopAccept(fd)
 }

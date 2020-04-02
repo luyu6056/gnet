@@ -9,9 +9,14 @@ package gnet
 
 import (
 	"errors"
+	"log"
+	"net"
+	"os"
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/luyu6056/gnet/tls"
 )
 
 // commandBufferSize represents the buffer size of event-loop command channel on Windows.
@@ -33,12 +38,12 @@ type server struct {
 	codec            ICodec             // codec for TCP stream
 	loops            []*eventloop       // all the loops
 	loopWG           sync.WaitGroup     // loop close WaitGroup
-	logger           Logger             // customized logger for logging info
 	ticktock         chan time.Duration // ticker channel
 	listenerWG       sync.WaitGroup     // listener close WaitGroup
 	eventHandler     EventHandler       // user eventHandler
 	subLoopGroup     IEventLoopGroup    // loops for handling events
 	subLoopGroupSize int                // number of loops
+	tlsconfig        *tls.Config
 }
 
 // waitForShutdown waits for a signal to shutdown.
@@ -68,14 +73,14 @@ func (svr *server) startListener() {
 	}()
 }
 
-func (svr *server) startLoops(numEventLoop int) {
-	for i := 0; i < numEventLoop; i++ {
+func (svr *server) startLoops(numLoops int) {
+	for i := 0; i < numLoops; i++ {
 		el := &eventloop{
 			ch:           make(chan interface{}, commandBufferSize),
 			idx:          i,
 			svr:          svr,
 			codec:        svr.codec,
-			connections:  make(map[*stdConn]struct{}),
+			connections:  make(map[*stdConn]bool),
 			eventHandler: svr.eventHandler,
 		}
 		svr.subLoopGroup.register(el)
@@ -84,13 +89,14 @@ func (svr *server) startLoops(numEventLoop int) {
 	svr.loopWG.Add(svr.subLoopGroupSize)
 	svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
 		go el.loopRun()
+		go el.loopOut(svr.opts.OutbufNum)
 		return true
 	})
 }
 
 func (svr *server) stop() {
 	// Wait on a signal for shutdown.
-	svr.logger.Printf("server is being shutdown with err: %v\n", svr.waitForShutdown())
+	log.Printf("server is being shutdown with err: %v\n", svr.waitForShutdown())
 
 	// Close listener.
 	svr.ln.close()
@@ -99,6 +105,7 @@ func (svr *server) stop() {
 	// Notify all loops to close.
 	svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
 		el.ch <- errClosing
+		el.outclose <- true
 		return true
 	})
 
@@ -115,38 +122,45 @@ func (svr *server) stop() {
 	return
 }
 
-func serve(eventHandler EventHandler, listener *listener, options *Options) (err error) {
-	// Figure out the correct number of loops/goroutines to use.
-	numEventLoop := 1
-	if options.Multicore {
-		numEventLoop = runtime.NumCPU()
+func serve(eventHandler EventHandler, addr string, options *Options) (err error) {
+	var ln listener
+	defer ln.close()
+
+	ln.network, ln.addr = parseAddr(addr)
+	if ln.network == "unix" {
+		sniffError(os.RemoveAll(ln.addr))
 	}
-	if options.NumEventLoop > 0 {
-		numEventLoop = options.NumEventLoop
+
+	if ln.network == "udp" {
+		ln.pconn, err = net.ListenPacket(ln.network, ln.addr)
+	} else {
+		ln.ln, err = net.Listen(ln.network, ln.addr)
+	}
+	if err != nil {
+		return err
+	}
+	if ln.pconn != nil {
+		ln.lnaddr = ln.pconn.LocalAddr()
+	} else {
+		ln.lnaddr = ln.ln.Addr()
+	}
+	if err := ln.system(); err != nil {
+		return err
+	}
+	// Figure out the correct number of loops/goroutines to use.
+	numCPU := options.LoopNum
+	if numCPU <= 0 {
+		numCPU = runtime.NumCPU()
 	}
 
 	svr := new(server)
 	svr.opts = options
+	svr.tlsconfig = options.Tlsconfig
 	svr.eventHandler = eventHandler
-	svr.ln = listener
-
-	switch options.LB {
-	case RoundRobin:
-		svr.subLoopGroup = new(roundRobinEventLoopGroup)
-	case LeastConnections:
-		svr.subLoopGroup = new(leastConnectionsEventLoopGroup)
-	case SourceAddrHash:
-		svr.subLoopGroup = new(sourceAddrHashEventLoopGroup)
-	}
-
+	svr.ln = &ln
+	svr.subLoopGroup = new(eventLoopGroup)
 	svr.ticktock = make(chan time.Duration, 1)
 	svr.cond = sync.NewCond(&sync.Mutex{})
-	svr.logger = func() Logger {
-		if options.Logger == nil {
-			return defaultLogger
-		}
-		return options.Logger
-	}()
 	svr.codec = func() ICodec {
 		if options.Codec == nil {
 			return new(BuiltInFrameCodec)
@@ -155,11 +169,10 @@ func serve(eventHandler EventHandler, listener *listener, options *Options) (err
 	}()
 
 	server := Server{
-		svr:          svr,
-		Multicore:    options.Multicore,
-		Addr:         listener.lnaddr,
-		NumEventLoop: numEventLoop,
-		ReusePort:    options.ReusePort,
+		Multicore:    numCPU > 1,
+		Addr:         ln.lnaddr,
+		NumEventLoop: numCPU,
+		ReUsePort:    options.ReusePort,
 		TCPKeepAlive: options.TCPKeepAlive,
 	}
 	switch svr.eventHandler.OnInitComplete(server) {
@@ -169,7 +182,7 @@ func serve(eventHandler EventHandler, listener *listener, options *Options) (err
 	}
 
 	// Start all loops.
-	svr.startLoops(numEventLoop)
+	svr.startLoops(numCPU)
 	// Start listener.
 	svr.startListener()
 	defer svr.stop()

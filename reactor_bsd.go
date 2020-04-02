@@ -6,40 +6,52 @@
 
 package gnet
 
-import "github.com/panjf2000/gnet/internal/netpoll"
+import "github.com/luyu6056/gnet/internal/netpoll"
 
 func (svr *server) activateMainReactor() {
 	defer svr.signalShutdown()
 
-	svr.logger.Printf("main reactor exits with error:%v\n", svr.mainLoop.poller.Polling(func(fd int, filter int16) error {
+	sniffError(svr.mainLoop.poller.Polling(func(fd int, filter int16) error {
 		return svr.acceptNewConnection(fd)
 	}))
 }
 
-func (svr *server) activateSubReactor(el *eventloop) {
+func (svr *server) activateSubReactor(lp *loop) {
 	defer svr.signalShutdown()
 
-	if el.idx == 0 && svr.opts.Ticker {
-		go el.loopTicker()
+	if lp.idx == 0 && svr.opts.Ticker {
+		go lp.loopTicker()
 	}
 
-	svr.logger.Printf("event-loop:%d exits with error:%v\n", el.idx, el.poller.Polling(func(fd int, filter int16) error {
-		if c, ack := el.connections[fd]; ack {
-			if filter == netpoll.EVFilterSock {
-				return el.loopCloseConn(c, nil)
-			}
+	sniffError(lp.poller.Polling(func(fd int, filter int16) error {
+		if c, ack := lp.connections[fd]; ack {
+			//switch filter {
+			//// Don't change the ordering of processing EVFILT_WRITE | EVFILT_READ | EV_ERROR/EV_EOF unless you're 100%
+			//// sure what you're doing!
+			//// Re-ordering can easily introduce bugs and bad side-effects, as I found out painfully in the past.
+			//case netpoll.EVFilterWrite:
+			//	if !c.outboundBuffer.IsEmpty() {
+			//		return lp.loopOut(c)
+			//	}
+			//	return nil
+			//case netpoll.EVFilterRead:
+			//	return lp.loopIn(c)
+			//case netpoll.EVFilterSock:
+			//	return lp.loopCloseConn(c, nil)
+			//}
+
 			switch c.outboundBuffer.IsEmpty() {
 			// Don't change the ordering of processing EVFILT_WRITE | EVFILT_READ | EV_ERROR/EV_EOF unless you're 100%
 			// sure what you're doing!
 			// Re-ordering can easily introduce bugs and bad side-effects, as I found out painfully in the past.
 			case false:
 				if filter == netpoll.EVFilterWrite {
-					return el.loopWrite(c)
+					return lp.loopOut(c)
 				}
 				return nil
 			case true:
 				if filter == netpoll.EVFilterRead {
-					return el.loopRead(c)
+					return lp.loopIn(c)
 				}
 				return nil
 			}

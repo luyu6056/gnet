@@ -6,7 +6,9 @@
 
 package gnet
 
-import "golang.org/x/sys/unix"
+import (
+	"golang.org/x/sys/unix"
+)
 
 func (svr *server) acceptNewConnection(fd int) error {
 	nfd, sa, err := unix.Accept(fd)
@@ -16,18 +18,28 @@ func (svr *server) acceptNewConnection(fd int) error {
 		}
 		return err
 	}
-	if err := unix.SetNonblock(nfd, true); err != nil {
-		return err
+	if !svr.Isblock {
+		if err := unix.SetNonblock(nfd, true); err != nil {
+			return err
+		}
 	}
-	el := svr.subLoopGroup.next(nfd)
-	c := newTCPConn(nfd, el, sa)
-	_ = el.poller.Trigger(func() (err error) {
-		if err = el.poller.AddRead(nfd); err != nil {
+	lp := svr.subLoopGroup.getbyfd(nfd)
+	c := newTCPConn(nfd, lp, sa)
+	if svr.tlsconfig != nil {
+		if err = c.UpgradeTls(svr.tlsconfig); err != nil {
+			return err
+		}
+	}
+	_ = lp.poller.Trigger(func() (err error) {
+		if err = lp.poller.AddRead(nfd); err != nil {
 			return
 		}
-		el.connections[nfd] = c
-		el.plusConnCount()
-		err = el.loopOpen(c)
+		index := c.fd / lp.svr.subLoopGroup.len()
+		if index >= len(lp.connections) {
+			lp.connections = append(lp.connections, make([]*conn, len(lp.connections))...)
+		}
+		lp.connections[index] = c
+		err = lp.loopOpen(c)
 		return
 	})
 	return nil

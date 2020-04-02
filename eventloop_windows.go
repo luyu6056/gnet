@@ -13,29 +13,18 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/panjf2000/gnet/pool/bytebuffer"
+	"github.com/luyu6056/gnet/buf"
 )
 
 type eventloop struct {
-	ch           chan interface{}      // command channel
-	idx          int                   // loop index
-	svr          *server               // server in loop
-	codec        ICodec                // codec for TCP
-	connCount    int32                 // number of active connections in event-loop
-	connections  map[*stdConn]struct{} // track all the sockets bound to this loop
-	eventHandler EventHandler          // user eventHandler
-}
-
-func (el *eventloop) plusConnCount() {
-	atomic.AddInt32(&el.connCount, 1)
-}
-
-func (el *eventloop) minusConnCount() {
-	atomic.AddInt32(&el.connCount, -1)
-}
-
-func (el *eventloop) loadConnCount() int32 {
-	return atomic.LoadInt32(&el.connCount)
+	ch                  chan interface{}  // command channel
+	idx                 int               // loop index
+	svr                 *server           // server in loop
+	codec               ICodec            // codec for TCP
+	connections         map[*stdConn]bool // track all the sockets bound to this loop
+	eventHandler        EventHandler      // user eventHandler
+	outbufchan, outChan chan *out
+	outclose            chan bool
 }
 
 func (el *eventloop) loopRun() {
@@ -70,17 +59,15 @@ func (el *eventloop) loopRun() {
 			err = v()
 		}
 		if err != nil {
-			el.svr.logger.Printf("event-loop:%d exits with error:%v\n", el.idx, err)
-			break
+			return
 		}
 	}
 }
 
 func (el *eventloop) loopAccept(c *stdConn) error {
-	el.connections[c] = struct{}{}
+	el.connections[c] = true
 	c.localAddr = el.svr.ln.lnaddr
 	c.remoteAddr = c.conn.RemoteAddr()
-	el.plusConnCount()
 
 	out, action := el.eventHandler.OnOpened(c)
 	if out != nil {
@@ -98,35 +85,30 @@ func (el *eventloop) loopAccept(c *stdConn) error {
 
 func (el *eventloop) loopRead(ti *tcpIn) (err error) {
 	c := ti.c
-	c.buffer = ti.in
-
-	for inFrame, _ := c.read(); inFrame != nil; inFrame, _ = c.read() {
-		out, action := el.eventHandler.React(inFrame, c)
-		if out != nil {
-			outFrame, _ := el.codec.Encode(c, out)
-			el.eventHandler.PreWrite()
-			_, err = c.conn.Write(outFrame)
-		}
+	c.inboundBufferWrite(ti.buf.Bytes())
+	ti.buf.Reset()
+	msgbufpool.Put(ti.buf)
+	for inFrame := c.readframe(); inFrame != nil; inFrame = c.readframe() {
+		action := el.eventHandler.React(inFrame, c)
 		switch action {
 		case None:
 		case Close:
-			return el.loopCloseConn(c)
+			return el.loopClose(c)
 		case Shutdown:
 			return ErrServerShutdown
 		}
 		if err != nil {
-			return el.loopError(c, err)
+			return el.loopClose(c)
 		}
 	}
-	_, _ = c.inboundBuffer.Write(c.buffer.Bytes())
-	bytebuffer.Put(c.buffer)
-	c.buffer = nil
+
 	return nil
 }
 
-func (el *eventloop) loopCloseConn(c *stdConn) error {
+func (el *eventloop) loopClose(c *stdConn) error {
 	atomic.StoreInt32(&c.done, 1)
-	return c.conn.SetReadDeadline(time.Now())
+	_ = c.conn.SetReadDeadline(time.Now())
+	return nil
 }
 
 func (el *eventloop) loopEgress() {
@@ -137,7 +119,7 @@ func (el *eventloop) loopEgress() {
 			if v == errCloseConns {
 				closed = true
 				for c := range el.connections {
-					_ = el.loopCloseConn(c)
+					_ = el.loopClose(c)
 				}
 			}
 		case *stderr:
@@ -175,35 +157,32 @@ func (el *eventloop) loopTicker() {
 func (el *eventloop) loopError(c *stdConn, err error) (e error) {
 	if e = c.conn.Close(); e == nil {
 		delete(el.connections, c)
-		el.minusConnCount()
 		switch atomic.LoadInt32(&c.done) {
 		case 0: // read error
 			if err != io.EOF {
-				el.svr.logger.Printf("socket: %s with err: %v\n", c.remoteAddr.String(), err)
+				//log.Printf("socket: %s with err: %v\n", c.remoteAddr.String(), err)
 			}
 		case 1: // closed
-			el.svr.logger.Printf("socket: %s has been closed by client\n", c.remoteAddr.String())
+			//log.Printf("socket: %s has been closed by client\n", c.remoteAddr.String())
 		}
 		switch el.eventHandler.OnClosed(c, err) {
 		case Shutdown:
 			return errClosing
 		}
 		c.releaseTCP()
-	} else {
-		el.svr.logger.Printf("failed to close connection:%s, error:%v\n", c.remoteAddr.String(), e)
 	}
 	return
 }
 
 func (el *eventloop) loopWake(c *stdConn) error {
-	//if co, ok := el.connections[c]; !ok || co != c {
-	//	return nil // ignore stale wakes.
-	//}
-	out, action := el.eventHandler.React(nil, c)
-	if out != nil {
-		frame, _ := el.codec.Encode(c, out)
-		_, _ = c.conn.Write(frame)
+	if c.RemoteAddr().Network() == "tcp" {
+		if _, ok := el.connections[c]; !ok {
+			return nil // ignore stale wakes.
+		}
 	}
+
+	action := el.eventHandler.React(nil, c)
+
 	return el.handleAction(c, action)
 }
 
@@ -212,7 +191,7 @@ func (el *eventloop) handleAction(c *stdConn, action Action) error {
 	case None:
 		return nil
 	case Close:
-		return el.loopCloseConn(c)
+		return el.loopClose(c)
 	case Shutdown:
 		return ErrServerShutdown
 	default:
@@ -221,15 +200,49 @@ func (el *eventloop) handleAction(c *stdConn, action Action) error {
 }
 
 func (el *eventloop) loopReadUDP(c *stdConn) error {
-	out, action := el.eventHandler.React(c.buffer.Bytes(), c)
-	if out != nil {
-		el.eventHandler.PreWrite()
-		_, _ = el.svr.ln.pconn.WriteTo(out, c.remoteAddr)
-	}
+	action := el.eventHandler.React(c.inboundBuffer.Bytes(), c)
 	switch action {
 	case Shutdown:
 		return errClosing
 	}
 	c.releaseUDP()
 	return nil
+}
+
+type out struct {
+	c *stdConn
+	b buf.MsgBuffer
+}
+
+func (el *eventloop) loopOut(bufnum int) {
+	if bufnum == 0 {
+		bufnum = 512
+	}
+	el.outbufchan = make(chan *out, bufnum)
+	el.outChan = make(chan *out, bufnum)
+	el.outclose = make(chan bool, 1)
+	for i := len(el.outbufchan); i < cap(el.outbufchan); i++ {
+		el.outbufchan <- &out{}
+	}
+
+	go func() { //单个gorutinue 减少unix.EAGAIN cpu消耗
+
+		for {
+
+			select {
+			case o := <-el.outChan:
+				if o.c.tlsconn != nil {
+					o.c.tlsconn.Write(o.b.Bytes())
+					o.c.conn.Write(o.c.outboundBuffer.Bytes())
+					o.c.outboundBuffer.Reset()
+				} else {
+					o.c.conn.Write(o.b.Bytes())
+				}
+				o.b.Reset()
+				el.outbufchan <- o
+			case <-el.outclose:
+				return
+			}
+		}
+	}()
 }

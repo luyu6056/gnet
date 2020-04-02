@@ -8,12 +8,10 @@ package gnet
 import (
 	"log"
 	"net"
-	"os"
-	"runtime"
 	"strings"
 	"time"
 
-	"github.com/panjf2000/gnet/internal/netpoll"
+	"github.com/luyu6056/gnet/tls"
 )
 
 // Action is an action that occurs after the completion of an event.
@@ -30,46 +28,27 @@ const (
 	Shutdown
 )
 
-var defaultLogger = Logger(log.New(os.Stderr, "", log.LstdFlags))
-
-// Logger is used for logging formatted messages.
-type Logger interface {
-	// Printf must have the same semantics as log.Printf.
-	Printf(format string, args ...interface{})
-}
-
 // Server represents a server context which provides information about the
 // running server and has control functions for managing state.
 type Server struct {
-	// svr is the internal server struct.
-	svr *server
 	// Multicore indicates whether the server will be effectively created with multi-cores, if so,
 	// then you must take care of synchronizing the shared data between all event callbacks, otherwise,
 	// it will run the server with single thread. The number of threads in the server will be automatically
 	// assigned to the value of runtime.NumCPU().
 	Multicore bool
 
-	// The Addr parameter is the listening address that align
-	// with the addr string passed to the Serve function.
+	// The Addr parameter is an array of listening addresses that align
+	// with the addr strings passed to the Serve function.
 	Addr net.Addr
 
-	// NumEventLoop is the number of event-loops that the server is using.
+	// NumLoops is the number of loops that the server is using.
 	NumEventLoop int
 
-	// ReusePort indicates whether SO_REUSEPORT is enable.
-	ReusePort bool
+	// ReUsePort indicates whether SO_REUSEPORT is enable.
+	ReUsePort bool
 
 	// TCPKeepAlive (SO_KEEPALIVE) socket option.
 	TCPKeepAlive time.Duration
-}
-
-// CountConnections counts the number of currently active connections and returns it.
-func (s Server) CountConnections() (count int) {
-	s.svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
-		count += int(el.loadConnCount())
-		return true
-	})
-	return
 }
 
 // Conn is a interface of gnet connection.
@@ -86,26 +65,21 @@ type Conn interface {
 	// RemoteAddr is the connection's remote peer address.
 	RemoteAddr() (addr net.Addr)
 
-	// Read reads all data from inbound ring-buffer and event-loop-buffer without moving "read" pointer, which means
-	// it does not evict the data from ring-buffer actually and those data will present in ring-buffer until the
-	// ResetBuffer method is invoked.
-	Read() (buf []byte)
+	Read() []byte
 
 	// ResetBuffer resets the inbound ring-buffer, which means all data in the inbound ring-buffer has been evicted.
 	ResetBuffer()
 
-	// ReadN reads bytes with the given length from inbound ring-buffer and event-loop-buffer without moving
-	// "read" pointer, which means it will not evict the data from buffer until the ShiftN method is invoked,
-	// it reads data from the inbound ring-buffer and event-loop-buffer when the length of the available data is equal
-	// to the given "n", otherwise, it will not read any data from the inbound ring-buffer.
-	//
-	// So you should use this method only if you know exactly the length of subsequent TCP stream based on the protocol,
-	// like the Content-Length attribute in an HTTP request which indicates you how much data you should read
-	// from inbound ring-buffer.
-	ReadN(n int) (size int, buf []byte)
-
 	// ShiftN shifts "read" pointer in buffer with the given length.
 	ShiftN(n int) (size int)
+
+	// ReadN reads bytes with the given length from inbound ring-buffer and event-loop-buffer, it would move
+	// "read" pointer, which means it will evict the data from buffer and it can't be revoked (put back to buffer),
+	// it reads data from the inbound ring-buffer and event-loop-buffer when the length of the available data is equal
+	// to the given "n", otherwise, it will not read any data from the inbound ring-buffer. So you should use this
+	// function only if you know exactly the length of subsequent TCP stream based on the protocol, like the
+	// Content-Length attribute in an HTTP request which indicates you how much data you should read from inbound ring-buffer.
+	ReadN(n int) (size int, buf []byte)
 
 	// BufferLength returns the length of available data in the inbound ring-buffer.
 	BufferLength() (size int)
@@ -123,8 +97,11 @@ type Conn interface {
 	// Wake triggers a React event for this connection.
 	Wake() error
 
-	// Close closes the current connection.
 	Close() error
+
+	//Data() []byte
+
+	UpgradeTls(config *tls.Config) error
 }
 
 type (
@@ -152,7 +129,7 @@ type (
 		// React fires when a connection sends the server data.
 		// Invoke c.Read() or c.ReadN(n) within the parameter c to read incoming data from client/connection.
 		// Use the out return value to write data to the client/connection.
-		React(frame []byte, c Conn) (out []byte, action Action)
+		React(frame []byte, c Conn) (action Action)
 
 		// Tick fires immediately after the server starts and will fire again
 		// following the duration specified by the delay return value.
@@ -192,7 +169,7 @@ func (es *EventServer) PreWrite() {
 // React fires when a connection sends the server data.
 // Invoke c.Read() or c.ReadN(n) within the parameter c to read incoming data from client/connection.
 // Use the out return value to write data to the client/connection.
-func (es *EventServer) React(frame []byte, c Conn) (out []byte, action Action) {
+func (es *EventServer) React(frame []byte, c Conn) (action Action) {
 	return
 }
 
@@ -217,49 +194,7 @@ func (es *EventServer) Tick() (delay time.Duration, action Action) {
 //
 // The "tcp" network scheme is assumed when one is not specified.
 func Serve(eventHandler EventHandler, addr string, opts ...Option) error {
-	var ln listener
-	defer func() {
-		ln.close()
-		if ln.network == "unix" {
-			sniffError(os.RemoveAll(ln.addr))
-		}
-	}()
-
-	options := loadOptions(opts...)
-
-	ln.network, ln.addr = parseAddr(addr)
-	if ln.network == "unix" {
-		sniffError(os.RemoveAll(ln.addr))
-		if runtime.GOOS == "windows" {
-			return ErrProtocolNotSupported
-		}
-	}
-	var err error
-	if ln.network == "udp" {
-		if options.ReusePort && runtime.GOOS != "windows" {
-			ln.pconn, err = netpoll.ReusePortListenPacket(ln.network, ln.addr)
-		} else {
-			ln.pconn, err = net.ListenPacket(ln.network, ln.addr)
-		}
-	} else {
-		if options.ReusePort && runtime.GOOS != "windows" {
-			ln.ln, err = netpoll.ReusePortListen(ln.network, ln.addr)
-		} else {
-			ln.ln, err = net.Listen(ln.network, ln.addr)
-		}
-	}
-	if err != nil {
-		return err
-	}
-	if ln.pconn != nil {
-		ln.lnaddr = ln.pconn.LocalAddr()
-	} else {
-		ln.lnaddr = ln.ln.Addr()
-	}
-	if err := ln.system(); err != nil {
-		return err
-	}
-	return serve(eventHandler, &ln, options)
+	return serve(eventHandler, addr, initOptions(opts...))
 }
 
 func parseAddr(addr string) (network, address string) {
@@ -276,5 +211,7 @@ func parseAddr(addr string) (network, address string) {
 func sniffError(err error) {
 	if err != nil {
 		log.Println(err)
+
 	}
+
 }

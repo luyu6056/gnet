@@ -1,15 +1,15 @@
 <p align="center">
 <img src="https://raw.githubusercontent.com/panjf2000/logos/master/gnet/logo.png" alt="gnet">
 <br />
-<a title="Build Status" target="_blank" href="https://travis-ci.com/panjf2000/gnet"><img src="https://img.shields.io/travis/com/panjf2000/gnet?style=flat-square&logo=travis-ci&logoColor=white"></a>
-<a title="Codecov" target="_blank" href="https://codecov.io/gh/panjf2000/gnet"><img src="https://img.shields.io/codecov/c/github/panjf2000/gnet?style=flat-square&logo=codecov"></a>
-<a title="Supported Platforms" target="_blank" href="https://github.com/panjf2000/gnet"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-549688?style=flat-square&logo=dlna"></a>
-<a title="Require Go Version" target="_blank" href="https://github.com/panjf2000/gnet"><img src="https://img.shields.io/badge/go-%3E%3D1.9-30dff3?style=flat-square&logo=go"></a>
-<a title="Release" target="_blank" href="https://github.com/panjf2000/gnet/releases"><img src="https://img.shields.io/github/v/release/panjf2000/gnet.svg?color=161823&style=flat-square&logo=smartthings"></a>
+<a title="Build Status" target="_blank" href="https://travis-ci.com/panjf2000/gnet"><img src="https://img.shields.io/travis/com/panjf2000/gnet?style=flat-square&logo=appveyor"></a>
+<a title="Codecov" target="_blank" href="https://codecov.io/gh/panjf2000/gnet"><img src="https://img.shields.io/codecov/c/github/panjf2000/gnet?style=flat-square&logo=appveyor"></a>
+<a title="Supported Platforms" target="_blank" href="https://github.com/panjf2000/gnet"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-549688?style=flat-square&logo=appveyor"></a>
+<a title="Require Go Version" target="_blank" href="https://github.com/panjf2000/gnet"><img src="https://img.shields.io/badge/go-%3E%3D1.9-30dff3?style=flat-square&logo=appveyor"></a>
+<a title="Release" target="_blank" href="https://github.com/panjf2000/gnet/releases"><img src="https://img.shields.io/github/release/panjf2000/gnet.svg?color=161823&style=flat-square&logo=appveyor"></a>
 <br/>
 <a title="" target="_blank" href="https://golangci.com/r/github.com/panjf2000/gnet"><img src="https://golangci.com/badges/github.com/panjf2000/gnet.svg"></a>
 <a title="Go Report Card" target="_blank" href="https://goreportcard.com/report/github.com/panjf2000/gnet"><img src="https://goreportcard.com/badge/github.com/panjf2000/gnet?style=flat-square"></a>
-<a title="Doc for gnet" target="_blank" href="https://pkg.go.dev/github.com/panjf2000/gnet?tab=doc"><img src="https://img.shields.io/badge/go.dev-doc-007d9c?style=flat-square&logo=read-the-docs"></a>
+<a title="Doc for gnet" target="_blank" href="https://gowalker.org/github.com/panjf2000/gnet?lang=zh-CN"><img src="https://img.shields.io/badge/api-reference-8d4bbb.svg?style=flat-square&logo=appveyor"></a>
 <a title="gnet on Sourcegraph" target="_blank" href="https://sourcegraph.com/github.com/panjf2000/gnet?badge"><img src="https://sourcegraph.com/github.com/panjf2000/gnet/-/badge.svg?style=flat-square"></a>
 <a title="Mentioned in Awesome Go" target="_blank" href="https://github.com/avelino/awesome-go#networking"><img src="https://awesome.re/mentioned-badge-flat.svg"></a>
 </p>
@@ -18,29 +18,31 @@
 
 # 📖 简介
 
-`gnet` 是一个基于事件驱动的高性能和轻量级网络框架。它直接使用 [epoll](https://en.wikipedia.org/wiki/Epoll) 和 [kqueue](https://en.wikipedia.org/wiki/Kqueue) 系统调用而非标准 Go 网络包：[net](https://golang.org/pkg/net/) 来构建网络应用，它的工作原理类似两个开源的网络库：[netty](https://github.com/netty/netty) 和 [libuv](https://github.com/libuv/libuv)。
+`gnet` 是一个基于事件驱动的高性能和轻量级网络框架。它直接使用 [epoll](https://en.wikipedia.org/wiki/Epoll) 和 [kqueue](https://en.wikipedia.org/wiki/Kqueue) 系统调用而非标准 Golang 网络包：[net](https://golang.org/pkg/net/) 来构建网络应用，它的工作原理类似两个开源的网络库：[netty](https://github.com/netty/netty) 和 [libuv](https://github.com/libuv/libuv)。
 
-`gnet` 设计开发的初衷不是为了取代 Go 的标准网络库：[net](https://golang.org/pkg/net/)，而是为了创造出一个类似于 [Redis](http://redis.io)、[Haproxy](http://www.haproxy.org) 能高效处理网络包的 Go 语言网络服务器框架。
+这个项目存在的价值是提供一个在网络包处理方面能和 [Redis](http://redis.io)、[Haproxy](http://www.haproxy.org) 这两个项目具有相近性能的 Go 语言网络服务器框架。
 
-`gnet` 的卖点在于它是一个高性能、轻量级、非阻塞的纯 Go 实现的传输层（TCP/UDP/Unix Domain Socket）网络框架，开发者可以使用 `gnet` 来实现自己的应用层网络协议(HTTP、RPC、Redis、WebSocket 等等)，从而构建出自己的应用层网络应用：比如在 `gnet` 上实现 HTTP 协议就可以创建出一个 HTTP 服务器 或者 Web 开发框架，实现 Redis 协议就可以创建出自己的 Redis 服务器等等。
+`gnet` 的亮点在于它是一个高性能、轻量级、非阻塞的纯 Go 实现的传输层（TCP/UDP/Unix-Socket）网络框架，开发者可以使用 `gnet` 来实现自己的应用层网络协议(HTTP、RPC、Redis、WebSocket 等等)，从而构建出自己的应用层网络应用：比如在 `gnet` 上实现 HTTP 协议就可以创建出一个 HTTP 服务器 或者 Web 开发框架，实现 Redis 协议就可以创建出自己的 Redis 服务器等等。
 
-**`gnet` 衍生自另一个项目：`evio`，但拥有更丰富的功能特性，且性能远胜之。**
+**`gnet` 衍生自另一个项目：`evio`，但性能远胜之且拥有更丰富的功能特性。**
 
 # 🚀 功能
 
 - [x] [高性能](#-性能测试) 的基于多线程/Go程网络模型的 event-loop 事件驱动
+- [x] 内置 Round-Robin 轮询负载均衡算法
 - [x] 内置 goroutine 池，由开源库 [ants](https://github.com/panjf2000/ants) 提供支持
 - [x] 内置 bytes 内存池，由开源库 [bytebufferpool](https://github.com/valyala/bytebufferpool) 提供支持
 - [x] 简洁的 APIs
 - [x] 基于 Ring-Buffer 的高效内存利用
-- [x] 支持多种网络协议/IPC 机制：TCP、UDP 和 Unix Domain Socket
-- [x] 支持多种负载均衡算法：Round-Robin(轮询)、Source Addr Hash(源地址哈希)和 Least-Connections(最小连接数)
+- [x] 支持多种网络协议：TCP、UDP、Unix Sockets
 - [x] 支持两种事件驱动机制：Linux 里的 epoll 以及 FreeBSD 里的 kqueue
 - [x] 支持异步写操作
 - [x] 灵活的事件定时器
 - [x] SO_REUSEPORT 端口重用
-- [x] 内置多种编解码器，支持对 TCP 数据流分包：LineBasedFrameCodec, DelimiterBasedFrameCodec, FixedLengthFrameCodec 和 LengthFieldBasedFrameCodec，参考自 [netty codec](https://netty.io/4.1/api/io/netty/handler/codec/package-summary.html)，而且支持自定制编解码器
+- [x] 内置多种编解码器，支持对 TCP 数据流分包：LineBasedFrameCodec, DelimiterBasedFrameCodec, FixedLengthFrameCodec 和 LengthFieldBasedFrameCodec，参考自 [netty codec](https://github.com/netty/netty/tree/netty-4.1.43.Final/codec/src/main/java/io/netty/handler/codec)，而且支持自定制编解码器
 - [x] 支持 Windows 平台，基于 ~~IOCP 事件驱动机制~~ Go 标准网络库
+- [ ] 加入更多的负载均衡算法：随机、最少连接、一致性哈希等等
+- [ ] 支持 TLS
 - [ ] 实现 `gnet` 客户端
 
 # 💡 核心设计
@@ -77,7 +79,7 @@
 <img alt="multi-reactors" src="https://raw.githubusercontent.com/panjf2000/illustrations/master/go/multi-reactors%2Bthread-pool-sequence-diagram.png">
 </p>
 
-`gnet` 通过利用 [ants](https://github.com/panjf2000/ants) goroutine 池（一个基于 Go 开发的高性能的 goroutine 池 ，实现了对大规模 goroutines 的调度管理、goroutines 复用）来实现『主从多 Reactors + 线程/Go程池』网络模型。关于 `ants` 的全部功能和使用，可以在 [ants 文档](https://pkg.go.dev/github.com/panjf2000/ants/v2?tab=doc) 里找到。
+`gnet` 通过利用 [ants](https://github.com/panjf2000/ants) goroutine 池（一个基于 Go 开发的高性能的 goroutine 池 ，实现了对大规模 goroutines 的调度管理、goroutines 复用）来实现『主从多 Reactors + 线程/Go程池』网络模型。关于 `ants` 的全部功能和使用，可以在 [ants 文档](https://gowalker.org/github.com/panjf2000/ants?lang=zh-CN) 里找到。
 
 `gnet` 内部集成了 `ants` 以及提供了 `pool.goroutine.Default()` 方法来初始化一个 `ants` goroutine 池，然后你可以把 `EventHandler.React` 中阻塞的业务逻辑提交到 goroutine 池里执行，最后在 goroutine 池里的代码调用 `gnet.Conn.AsyncWrite([]byte)` 方法把处理完阻塞逻辑之后得到的输出数据异步写回客户端，这样就可以避免阻塞 event-loop 线程。
 
@@ -110,7 +112,7 @@ go get -u github.com/panjf2000/gnet
 
 ## 使用示例
 
-**详细的文档在这里: [gnet 接口文档](https://pkg.go.dev/github.com/panjf2000/gnet?tab=doc)，不过下面我们先来了解下使用 `gnet` 的简略方法。**
+**详细的文档在这里: [gnet 接口文档](https://gowalker.org/github.com/panjf2000/gnet?lang=zh-CN)，不过下面我们先来了解下使用 `gnet` 的简略方法。**
 
 用 `gnet` 来构建网络服务器是非常简单的，只需要实现 `gnet.EventHandler`接口然后把你关心的事件函数注册到里面，最后把它连同监听地址一起传递给 `gnet.Serve` 函数就完成了。在服务器开始工作之后，每一条到来的网络连接会在各个事件之间传递，如果你想在某个事件中关闭某条连接或者关掉整个服务器的话，直接在事件函数里把 `gnet.Action` 设置成 `Cosed` 或者 `Shutdown`就行了。
 
@@ -170,7 +172,7 @@ func main() {
 }
 ```
 
-正如你所见，上面的例子里 `gnet` 实例只注册了一个 `EventHandler.React` 事件。一般来说，主要的业务逻辑代码会写在这个事件方法里，这个方法会在服务器接收到客户端写过来的数据之时被调用，此时的输入参数: `frame` 已经是解码过后的一个完整的网络数据包，一般来说你需要实现 `gnet` 的[codec 接口](https://github.com/panjf2000/gnet/blob/master/codec.go#L18-L24)作为你自己的业务编解码器来处理 TCP 组包和分包的问题，如果你不实现那个接口的话，那么 `gnet` 将会使用[默认的 codec](https://github.com/panjf2000/gnet/blob/master/codec.go#L53-L63)，这意味着在 `EventHandler.React` 被触发调用之时输入参数: `frame` 里存储的是所有网络数据：包括最新的以及还在 buffer 里的旧数据，然后处理输入数据（这里只是把数据 echo 回去）并且在处理完之后把需要输出的数据赋值给 `out` 变量并返回，接着输出的数据会经过编码，最后被写回客户端。
+正如你所见，上面的例子里 `gnet` 实例只注册了一个 `EventHandler.React` 事件。一般来说，主要的业务逻辑代码会写在这个事件方法里，这个方法会在服务器接收到客户端写过来的数据之时被调用，然后处理输入数据（这里只是把数据 echo 回去）并且在处理完之后把需要输出的数据赋值给 `out` 变量然后返回，之后你就不用管了，`gnet` 会帮你把数据写回客户端的。
 
 ### 带阻塞逻辑的 echo 服务器
 
@@ -253,7 +255,7 @@ func main() {
 }
 ```
 
-正如我在『主从多 Reactors + 线程/Go程池』那一节所说的那样，如果你的业务逻辑里包含阻塞代码，那么你应该把这些阻塞代码变成非阻塞的，比如通过把这部分代码放到独立的 goroutines 去运行，但是要注意一点，如果你的服务器处理的流量足够的大，那么这种做法将会导致创建大量的 goroutines 极大地消耗系统资源，所以我一般建议你用 goroutine pool 来做 goroutines 的复用和管理，以及节省系统资源。
+正如我在『主从多 Reactors + 线程/Go程池』那一节所说的那样，如果你的业务逻辑里包含阻塞代码，那么你应该把这些阻塞代码变成非阻塞的，比如通过把这部分代码通过 goroutine 去运行，但是要注意一点，如果你的服务器处理的流量足够的大，那么这种做法将会导致创建大量的 goroutines 极大地消耗系统资源，所以我一般建议你用 goroutine pool 来做 goroutines 的复用和管理，以及节省系统资源。
 
 **各种 gnet 示例:**
 
@@ -277,7 +279,7 @@ type echoServer struct {
 
 func (es *echoServer) OnInitComplete(srv gnet.Server) (action gnet.Action) {
 	log.Printf("Echo server is listening on %s (multi-cores: %t, loops: %d)\n",
-		srv.Addr.String(), srv.Multicore, srv.NumEventLoop)
+		srv.Addr.String(), srv.Multicore, srv.NumLoops)
 	return
 }
 func (es *echoServer) React(frame []byte, c gnet.Conn) (out []byte, action gnet.Action) {
@@ -330,7 +332,7 @@ type echoServer struct {
 
 func (es *echoServer) OnInitComplete(srv gnet.Server) (action gnet.Action) {
 	log.Printf("UDP Echo server is listening on %s (multi-cores: %t, loops: %d)\n",
-		srv.Addr.String(), srv.Multicore, srv.NumEventLoop)
+		srv.Addr.String(), srv.Multicore, srv.NumLoops)
 	return
 }
 func (es *echoServer) React(frame []byte, c gnet.Conn) (out []byte, action gnet.Action) {
@@ -365,60 +367,6 @@ func main() {
 </details>
 
 <details>
-	<summary> UDS Echo Server </summary>
-
-```go
-package main
-
-import (
-	"flag"
-	"fmt"
-	"log"
-
-	"github.com/panjf2000/gnet"
-)
-
-type echoServer struct {
-	*gnet.EventServer
-}
-
-func (es *echoServer) OnInitComplete(srv gnet.Server) (action gnet.Action) {
-	log.Printf("Echo server is listening on %s (multi-cores: %t, loops: %d)\n",
-		srv.Addr.String(), srv.Multicore, srv.NumEventLoop)
-	return
-}
-func (es *echoServer) React(frame []byte, c gnet.Conn) (out []byte, action gnet.Action) {
-	// Echo synchronously.
-	out = frame
-	return
-
-	/*
-		// Echo asynchronously.
-		data := append([]byte{}, frame...)
-		go func() {
-			time.Sleep(time.Second)
-			c.AsyncWrite(data)
-		}()
-		return
-	*/
-}
-
-func main() {
-	var addr string
-	var multicore bool
-
-	// Example command: go run echo.go --sock echo.sock --multicore=true
-	flag.StringVar(&addr, "sock", "echo.sock", "--port 9000")
-	flag.BoolVar(&multicore, "multicore", false, "--multicore true")
-	flag.Parse()
-
-	echo := new(echoServer)
-	log.Fatal(gnet.Serve(echo, fmt.Sprintf("unix://%s", addr), gnet.WithMulticore(multicore)))
-}
-```
-</details>
-
-<details>
 	<summary> HTTP Server </summary>
 
 ```go
@@ -431,12 +379,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/panjf2000/gnet"
 )
 
 var res string
+var resBytes []byte
 
 type request struct {
 	proto, method string
@@ -458,39 +406,35 @@ type httpCodec struct {
 
 func (hc *httpCodec) Encode(c gnet.Conn, buf []byte) (out []byte, err error) {
 	if c.Context() == nil {
-		return buf, nil
+		return appendHandle(out, res), nil
 	}
 	return appendResp(out, "500 Error", "", errMsg+"\n"), nil
 }
 
-func (hc *httpCodec) Decode(c gnet.Conn) (out []byte, err error) {
+func (hc *httpCodec) Decode(c gnet.Conn) ([]byte, error) {
 	buf := c.Read()
-	c.ResetBuffer()
-
 	// process the pipeline
-	var leftover []byte
-pipeline:
-	leftover, err = parseReq(buf, &hc.req)
+	leftover, err := parseReq(buf, &hc.req)
 	// bad thing happened
 	if err != nil {
 		c.SetContext(err)
 		return nil, err
 	} else if len(leftover) == len(buf) {
 		// request not ready, yet
-		return
+		return nil, nil
 	}
-	out = appendHandle(out, res)
-	buf = leftover
-	goto pipeline
+	c.ResetBuffer()
+	return buf, nil
 }
 
 func (hs *httpServer) OnInitComplete(srv gnet.Server) (action gnet.Action) {
 	log.Printf("HTTP server is listening on %s (multi-cores: %t, loops: %d)\n",
-		srv.Addr.String(), srv.Multicore, srv.NumEventLoop)
+		srv.Addr.String(), srv.Multicore, srv.NumLoops)
 	return
 }
 
 func (hs *httpServer) React(frame []byte, c gnet.Conn) (out []byte, action gnet.Action) {
+	// process the pipeline
 	if c.Context() != nil {
 		// bad thing happened
 		out = errMsgBytes
@@ -498,7 +442,7 @@ func (hs *httpServer) React(frame []byte, c gnet.Conn) (out []byte, action gnet.
 		return
 	}
 	// handle the request
-	out = frame
+	out = resBytes
 	return
 }
 
@@ -512,6 +456,7 @@ func main() {
 	flag.Parse()
 
 	res = "Hello World!\r\n"
+	resBytes = []byte(res)
 
 	http := new(httpServer)
 	hc := new(httpCodec)
@@ -551,15 +496,11 @@ func appendResp(b []byte, status, head, body string) []byte {
 	return b
 }
 
-func b2s(b []byte) string {
-	return *(*string)(unsafe.Pointer(&b))
-}
-
 // parseReq is a very simple http request parser. This operation
 // waits for the entire payload to be buffered before returning a
 // valid request.
 func parseReq(data []byte, req *request) (leftover []byte, err error) {
-	sdata := b2s(data)
+	sdata := string(data)
 	var i, s int
 	var head string
 	var clen int
@@ -649,7 +590,7 @@ type pushServer struct {
 
 func (ps *pushServer) OnInitComplete(srv gnet.Server) (action gnet.Action) {
 	log.Printf("Push server is listening on %s (multi-cores: %t, loops: %d), "+
-		"pushing data every %s ...\n", srv.Addr.String(), srv.Multicore, srv.NumEventLoop, ps.tick.String())
+		"pushing data every %s ...\n", srv.Addr.String(), srv.Multicore, srv.NumLoops, ps.tick.String())
 	return
 }
 func (ps *pushServer) OnOpened(c gnet.Conn) (out []byte, action gnet.Action) {
@@ -788,7 +729,7 @@ type codecServer struct {
 
 func (cs *codecServer) OnInitComplete(srv gnet.Server) (action gnet.Action) {
 	log.Printf("Test codec server is listening on %s (multi-cores: %t, loops: %d)\n",
-		srv.Addr.String(), srv.Multicore, srv.NumEventLoop)
+		srv.Addr.String(), srv.Multicore, srv.NumLoops)
 	return
 }
 
@@ -873,17 +814,11 @@ events.Tick = func() (delay time.Duration, action Action){
 
 ## UDP 支持
 
-`gnet` 支持 UDP 协议，所以在 `gnet.Serve` 里绑定允许绑定 UDP 地址，`gnet` 的 UDP 支持有如下的特性：
+`gnet` 支持 UDP 协议，在 `gnet.Serve` 里绑定 UDP 地址即可，`gnet` 的 UDP 支持有如下的特性：
 
-- 网络数据的读入和写出不做缓冲，会一次性读写客户端。
+- 数据进入服务器之后立刻写回客户端，不做缓存。
 -  `EventHandler.OnOpened` 和 `EventHandler.OnClosed` 这两个事件在 UDP 下不可用，唯一可用的事件是 `React`。
--  TCP 里的异步写操作是 `AsyncWrite([]byte)` 方法，而在 UDP 里对应的方法是  `SendTo([]byte)`。
-
-## Unix Domain Socket 支持
-
-`gnet` 还支持 UDS(Unix Domain Socket) 机制，只需要把类似 "unix://xxx" 的 UDS 地址传参给 `gnet.Serve` 函数绑定就行了。
-
-在 `gnet` 里使用 UDS 和使用 TCP 没有什么不同，所有 TCP 协议下可以使用的事件函数都可以在 UDS 中使用。
+-  TCP 里的读写操作是 `Read()/ReadFrame()` 和 `AsyncWrite([]byte)` 方法，而在 UDP 里对应的方法是 `ReadFromUDP()` 和 `SendTo([]byte)`。
 
 ## 使用多核
 
@@ -895,7 +830,7 @@ events.Tick = func() (delay time.Duration, action Action){
 
 ## SO_REUSEPORT 端口复用
 
-服务器支持 [SO_REUSEPORT](https://lwn.net/Articles/542629/) 端口复用特性，允许多个 sockets 监听同一个端口，然后内核会帮你做好负载均衡，每次只唤醒一个 socket 来处理 `connect` 请求，避免惊群效应。
+服务器支持 [SO_REUSEPORT](https://lwn.net/Articles/542629/) 端口复用特性，允许多个 sockets 监听同一个端口，然后内核会帮你做好负载均衡，每次只唤醒一个 socket 来处理 accept 请求，避免惊群效应。
 
 默认情况下，`gnet` 也不会有惊群效应，因为 `gnet` 默认的网络模型是主从多 Reactors，只会有一个主 reactor 在监听端口以及接受新连接。所以，开不开启 `SO_REUSEPORT` 选项是无关紧要的，只是开启了这个选项之后 `gnet` 的网络模型将会切换成 `evio` 的旧网络模型，这一点需要注意一下。
 
@@ -914,28 +849,6 @@ gnet.Serve(events, "tcp://:9000", gnet.WithMulticore(true), gnet.WithReusePort(t
 这里有一个使用编解码器对 TCP 流分包的[例子](https://github.com/panjf2000/gnet/blob/master/examples/codec/server/server.go)。
 
 # 📊 性能测试
-
-## TechEmpower 性能测试
-
-```powershell
-# Hardware
-CPU: 28 HT Cores Intel(R) Xeon(R) Gold 5120 CPU @ 2.20GHz
-Mem: 32GB RAM
-OS : Ubuntu 18.04.3 4.15.0-88-generic #88-Ubuntu
-Net: Switched 10-gigabit ethernet
-Go : go1.14.x linux/amd64
-```
-
-![All language](https://raw.githubusercontent.com/panjf2000/illustrations/master/benchmark/techempower-all.jpg)
-
-这是包含全部编程语言框架的性能排名前 50 的结果，总榜单包含了全世界共计 382 个框架。
-
-
-![Golang](https://raw.githubusercontent.com/panjf2000/illustrations/master/benchmark/techempower-go.png)
-
-这是 Go 语言分类下的全部排名。
-
-完整的排行可以通过 [Full ranking list of Plaintext](https://www.techempower.com/benchmarks/#section=test&runid=c7152e8f-5b33-4ae7-9e89-630af44bc8de&hw=ph&test=plaintext) 查看.
 
 ## 同类型的网络库性能对比
 

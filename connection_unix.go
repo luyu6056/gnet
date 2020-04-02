@@ -8,217 +8,221 @@
 package gnet
 
 import (
+	"fmt"
 	"net"
+	"sync"
+	"time"
 
-	"github.com/panjf2000/gnet/internal/netpoll"
-	"github.com/panjf2000/gnet/pool/bytebuffer"
-	prb "github.com/panjf2000/gnet/pool/ringbuffer"
-	"github.com/panjf2000/gnet/ringbuffer"
+	"github.com/luyu6056/gnet/buf"
+	"github.com/luyu6056/gnet/internal/netpoll"
+	"github.com/luyu6056/gnet/tls"
 	"golang.org/x/sys/unix"
 )
 
+var msgbufpool = sync.Pool{New: func() interface{} {
+	return &buf.MsgBuffer{}
+}}
+
 type conn struct {
-	fd             int                    // file descriptor
-	sa             unix.Sockaddr          // remote socket address
-	ctx            interface{}            // user-defined context
-	loop           *eventloop             // connected event-loop
-	buffer         []byte                 // reuse memory of inbound data as a temporary buffer
-	codec          ICodec                 // codec for TCP
-	opened         bool                   // connection opened event fired
-	localAddr      net.Addr               // local addr
-	remoteAddr     net.Addr               // remote addr
-	byteBuffer     *bytebuffer.ByteBuffer // bytes buffer for buffering current packet and data in ring-buffer
-	inboundBuffer  *ringbuffer.RingBuffer // buffer for data from client
-	outboundBuffer *ringbuffer.RingBuffer // buffer for data that is ready to write to client
+	fd                 int            // file descriptor
+	sa                 unix.Sockaddr  // remote socket address
+	ctx                interface{}    // user-defined context
+	loop               *eventloop     // connected loop
+	codec              ICodec         // codec for TCP
+	opened             int32          // connection opened event fired
+	localAddr          net.Addr       // local addr
+	remoteAddr         net.Addr       // remote addr
+	inboundBuffer      *buf.MsgBuffer // buffer for data from client
+	outboundBuffer     *buf.MsgBuffer
+	tlsconn            *tls.Conn
+	inboundBufferWrite func([]byte) (int, error)
+	readframe          func() []byte
+	eagainNum          time.Duration
 }
 
-func newTCPConn(fd int, el *eventloop, sa unix.Sockaddr) *conn {
-	return &conn{
+func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
+	c := &conn{
 		fd:             fd,
 		sa:             sa,
-		loop:           el,
-		codec:          el.codec,
-		inboundBuffer:  prb.Get(),
-		outboundBuffer: prb.Get(),
+		loop:           lp,
+		codec:          lp.codec,
+		inboundBuffer:  msgbufpool.Get().(*buf.MsgBuffer),
+		outboundBuffer: msgbufpool.Get().(*buf.MsgBuffer),
 	}
+	c.inboundBufferWrite = c.inboundBuffer.Write
+	c.readframe = c.read
+	c.inboundBuffer.Reset()
+	c.outboundBuffer.Reset()
+	return c
 }
 
 func (c *conn) releaseTCP() {
-	c.opened = false
 	c.sa = nil
 	c.ctx = nil
-	c.buffer = nil
-	c.localAddr = nil
-	c.remoteAddr = nil
-	prb.Put(c.inboundBuffer)
-	prb.Put(c.outboundBuffer)
+	c.inboundBuffer.Reset()
+	c.outboundBuffer.Reset()
+	msgbufpool.Put(c.inboundBuffer)
+	msgbufpool.Put(c.outboundBuffer)
 	c.inboundBuffer = nil
 	c.outboundBuffer = nil
-	bytebuffer.Put(c.byteBuffer)
-	c.byteBuffer = nil
 }
 
-func newUDPConn(fd int, el *eventloop, sa unix.Sockaddr) *conn {
-	return &conn{
-		fd:         fd,
-		sa:         sa,
-		localAddr:  el.svr.ln.lnaddr,
-		remoteAddr: netpoll.SockaddrToUDPAddr(sa),
+var conn_m sync.Map
+
+func newUDPConn(fd int, lp *eventloop, sa unix.Sockaddr) (c *conn) {
+	if v, ok := conn_m.Load(netpoll.SockaddrToUDPAddr(sa).String()); ok {
+		c = v.(*conn)
+	} else {
+		c = &conn{
+			localAddr:  lp.svr.ln.lnaddr,
+			remoteAddr: netpoll.SockaddrToUDPAddr(sa),
+		}
 	}
+	c.fd = fd
+	c.sa = sa
+	c.loop = lp
+	return
 }
 
 func (c *conn) releaseUDP() {
-	c.ctx = nil
-	c.localAddr = nil
-	c.remoteAddr = nil
-}
 
-func (c *conn) open(buf []byte) {
-	n, err := unix.Write(c.fd, buf)
+}
+func (c *conn) tlsread() (frame []byte) {
+	var err error
+	if !c.tlsconn.HandshakeComplete() {
+		//先判断是否足够一条消息
+		data := c.tlsconn.RawData()
+		if len(data) < 5 || len(data) < 5+int(data[3])<<8|int(data[4]) {
+			return nil
+		}
+		if err := c.tlsconn.Handshake(); err != nil {
+			if err != nil {
+				fmt.Println("tlsread错误", err)
+				_ = c.loop.poller.Trigger(func() error {
+					return c.loop.loopCloseConn(c, err)
+				})
+			}
+		}
+		if !c.tlsconn.HandshakeComplete() || len(c.tlsconn.RawData()) == 0 { //握手没成功，或者握手成功，但是没有数据黏包了
+			return nil
+		}
+	}
+
+	for err = c.tlsconn.ReadFrame(); err == nil; err = c.tlsconn.ReadFrame() { //循环读取直到获得
+		frame, err = c.codec.Decode(c)
+		if err != nil {
+			_ = c.loop.poller.Trigger(func() error {
+				return c.loop.loopCloseConn(c, err)
+			})
+		}
+		if frame != nil {
+			return frame
+		}
+	}
+	return nil
+}
+func (c *conn) read() []byte {
+	frame, err := c.codec.Decode(c)
 	if err != nil {
-		_, _ = c.outboundBuffer.Write(buf)
-		return
+		_ = c.loop.poller.Trigger(func() error {
+			return c.loop.loopCloseConn(c, err)
+		})
+		return nil
 	}
-
-	if n < len(buf) {
-		_, _ = c.outboundBuffer.Write(buf[n:])
-	}
-}
-
-func (c *conn) read() ([]byte, error) {
-	return c.codec.Decode(c)
+	return frame
 }
 
 func (c *conn) write(buf []byte) {
-	if !c.outboundBuffer.IsEmpty() {
-		_, _ = c.outboundBuffer.Write(buf)
-		return
-	}
-	n, err := unix.Write(c.fd, buf)
-	if err != nil {
-		if err == unix.EAGAIN {
-			_, _ = c.outboundBuffer.Write(buf)
-			_ = c.loop.poller.ModReadWrite(c.fd)
-			return
-		}
-		_ = c.loop.loopCloseConn(c, err)
-		return
-	}
-	if n < len(buf) {
-		_, _ = c.outboundBuffer.Write(buf[n:])
-		_ = c.loop.poller.ModReadWrite(c.fd)
-	}
+	o := <-c.loop.outbufchan
+	o.c = c
+	o.b.Write(buf)
+	c.loop.outChan <- o
 }
 
-func (c *conn) sendTo(buf []byte) error {
-	return unix.Sendto(c.fd, buf, 0, c.sa)
+func (c *conn) sendTo(buf []byte) {
+	c.write(buf)
 }
 
 // ================================= Public APIs of gnet.Conn =================================
 
 func (c *conn) Read() []byte {
-	if c.inboundBuffer.IsEmpty() {
-		return c.buffer
-	}
-	c.byteBuffer = c.inboundBuffer.WithByteBuffer(c.buffer)
-	return c.byteBuffer.Bytes()
+	return c.inboundBuffer.Bytes()
 }
 
 func (c *conn) ResetBuffer() {
-	c.buffer = nil
 	c.inboundBuffer.Reset()
-	bytebuffer.Put(c.byteBuffer)
-	c.byteBuffer = nil
-}
-
-func (c *conn) ReadN(n int) (size int, buf []byte) {
-	inBufferLen := c.inboundBuffer.Length()
-	tempBufferLen := len(c.buffer)
-	if inBufferLen+tempBufferLen < n || n <= 0 {
-		return
-	}
-	size = n
-	if c.inboundBuffer.IsEmpty() {
-		buf = c.buffer[:n]
-		return
-	}
-	head, tail := c.inboundBuffer.LazyRead(n)
-	c.byteBuffer = bytebuffer.Get()
-	_, _ = c.byteBuffer.Write(head)
-	_, _ = c.byteBuffer.Write(tail)
-	if inBufferLen >= n {
-		buf = c.byteBuffer.Bytes()
-		return
-	}
-
-	restSize := n - inBufferLen
-	_, _ = c.byteBuffer.Write(c.buffer[:restSize])
-	buf = c.byteBuffer.Bytes()
-	return
 }
 
 func (c *conn) ShiftN(n int) (size int) {
-	inBufferLen := c.inboundBuffer.Length()
-	tempBufferLen := len(c.buffer)
-	if inBufferLen+tempBufferLen < n || n <= 0 {
-		c.ResetBuffer()
-		size = inBufferLen + tempBufferLen
-		return
-	}
-	size = n
-	if c.inboundBuffer.IsEmpty() {
-		c.buffer = c.buffer[n:]
-		return
-	}
-
-	bytebuffer.Put(c.byteBuffer)
-	c.byteBuffer = nil
-
-	if inBufferLen >= n {
-		c.inboundBuffer.Shift(n)
-		return
-	}
-	c.inboundBuffer.Reset()
-
-	restSize := n - inBufferLen
-	c.buffer = c.buffer[restSize:]
+	c.inboundBuffer.Shift(n)
 	return
+}
+
+func (c *conn) ReadN(n int) (size int, buf []byte) {
+	buf = c.inboundBuffer.PreBytes(n)
+	return len(buf), buf
 }
 
 func (c *conn) BufferLength() int {
-	return c.inboundBuffer.Length() + len(c.buffer)
+	return c.inboundBuffer.Len()
 }
 
-func (c *conn) AsyncWrite(buf []byte) (err error) {
-	var encodedBuf []byte
-	if encodedBuf, err = c.codec.Encode(c, buf); err == nil {
-		return c.loop.poller.Trigger(func() error {
-			if c.opened {
-				c.write(encodedBuf)
-			}
-			return nil
+//用于直出不编码的出口，tls调用
+func (c *conn) Write(buf []byte) (n int, err error) {
+	o := <-c.loop.outbufchan
+	o.c = c
+	o.b.Write(buf)
+	c.loop.outChan <- o
+	return len(buf), nil
+}
+
+func (c *conn) AsyncWrite(buf []byte) error {
+	encodedBuf, err := c.codec.Encode(c, buf)
+	if encodedBuf != nil {
+		o := <-c.loop.outbufchan
+		o.c = c
+		o.b.Write(buf)
+		c.loop.outChan <- o
+	} else if err != nil {
+		_ = c.loop.poller.Trigger(func() error {
+			return c.loop.loopCloseConn(c, err)
 		})
 	}
-	return
+	return err
 }
 
 func (c *conn) SendTo(buf []byte) error {
-	return c.sendTo(buf)
+	return unix.Sendto(c.fd, buf, 0, c.sa)
 }
 
 func (c *conn) Wake() error {
 	return c.loop.poller.Trigger(func() error {
 		return c.loop.loopWake(c)
 	})
-}
 
-func (c *conn) Close() error {
-	return c.loop.poller.Trigger(func() error {
-		return c.loop.loopCloseConn(c, nil)
-	})
 }
 
 func (c *conn) Context() interface{}       { return c.ctx }
 func (c *conn) SetContext(ctx interface{}) { c.ctx = ctx }
 func (c *conn) LocalAddr() net.Addr        { return c.localAddr }
 func (c *conn) RemoteAddr() net.Addr       { return c.remoteAddr }
+func (c *conn) Close() error {
+	_ = c.loop.poller.Trigger(func() error {
+		return c.loop.loopCloseConn(c, nil)
+	})
+	return nil
+}
+func (c *conn) UpgradeTls(config *tls.Config) (err error) {
+	c.tlsconn, err = tls.Server(c, c.inboundBuffer, c.outboundBuffer, config.Clone())
+	c.inboundBufferWrite = c.tlsconn.RawWrite
+	c.readframe = c.tlsread
+	//很有可能握手包在UpgradeTls之前发过来了，这里把inboundBuffer剩余数据当做握手数据处理
+	if c.inboundBuffer.Len() > 0 {
+		c.tlsconn.RawWrite(c.inboundBuffer.Bytes())
+		c.inboundBuffer.Reset()
+		if err := c.tlsconn.Handshake(); err != nil {
+			return err
+		}
+	}
+	return err
+}

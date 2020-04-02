@@ -6,28 +6,42 @@
 
 package gnet
 
-import "github.com/panjf2000/gnet/internal/netpoll"
+import "github.com/luyu6056/gnet/internal/netpoll"
 
-func (el *eventloop) handleEvent(fd int, filter int16) error {
-	if c, ok := el.connections[fd]; ok {
-		if filter == netpoll.EVFilterSock {
-			return el.loopCloseConn(c, nil)
-		}
+func (lp *loop) handleEvent(fd int, filter int16) error {
+	if c, ok := lp.connections[fd]; ok {
+		//switch filter {
+		//// Don't change the ordering of processing EVFILT_WRITE | EVFILT_READ | EV_ERROR/EV_EOF unless you're 100%
+		//// sure what you're doing!
+		//// Re-ordering can easily introduce bugs and bad side-effects, as I found out painfully in the past.
+		//case netpoll.EVFilterWrite:
+		//	if !c.outboundBuffer.IsEmpty() {
+		//		return lp.loopOut(c)
+		//	}
+		//	return nil
+		//case netpoll.EVFilterRead:
+		//	return lp.loopIn(c)
+		//case netpoll.EVFilterSock:
+		//	return lp.loopCloseConn(c, nil)
+		//default:
+		//	return nil
+		//}
+
 		switch c.outboundBuffer.IsEmpty() {
 		// Don't change the ordering of processing EVFILT_WRITE | EVFILT_READ | EV_ERROR/EV_EOF unless you're 100%
 		// sure what you're doing!
 		// Re-ordering can easily introduce bugs and bad side-effects, as I found out painfully in the past.
 		case false:
 			if filter == netpoll.EVFilterWrite {
-				return el.loopWrite(c)
+				return lp.loopOut(c)
 			}
 			return nil
 		case true:
 			if filter == netpoll.EVFilterRead {
-				return el.loopRead(c)
+				return lp.loopIn(c)
 			}
 			return nil
 		}
 	}
-	return el.loopAccept(fd)
+	return lp.loopAccept(fd)
 }

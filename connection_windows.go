@@ -9,11 +9,15 @@ package gnet
 
 import (
 	"net"
+	"sync"
 
-	"github.com/panjf2000/gnet/pool/bytebuffer"
-	prb "github.com/panjf2000/gnet/pool/ringbuffer"
-	"github.com/panjf2000/gnet/ringbuffer"
+	"github.com/luyu6056/gnet/buf"
+	"github.com/luyu6056/gnet/tls"
 )
+
+var msgbufpool = sync.Pool{New: func() interface{} {
+	return &buf.MsgBuffer{}
+}}
 
 type stderr struct {
 	c   *stdConn
@@ -25,8 +29,8 @@ type wakeReq struct {
 }
 
 type tcpIn struct {
-	c  *stdConn
-	in *bytebuffer.ByteBuffer
+	c   *stdConn
+	buf *buf.MsgBuffer
 }
 
 type udpIn struct {
@@ -34,164 +38,174 @@ type udpIn struct {
 }
 
 type stdConn struct {
-	ctx           interface{}            // user-defined context
-	conn          net.Conn               // original connection
-	loop          *eventloop             // owner event-loop
-	done          int32                  // 0: attached, 1: closed
-	buffer        *bytebuffer.ByteBuffer // reuse memory of inbound data as a temporary buffer
-	codec         ICodec                 // codec for TCP
-	localAddr     net.Addr               // local server addr
-	remoteAddr    net.Addr               // remote peer addr
-	byteBuffer    *bytebuffer.ByteBuffer // bytes buffer for buffering current packet and data in ring-buffer
-	inboundBuffer *ringbuffer.RingBuffer // buffer for data from client
+	ctx                           interface{}    // user-defined context
+	conn                          net.Conn       // original connection
+	loop                          *eventloop     // owner loop
+	done                          int32          // 0: attached, 1: closed
+	codec                         ICodec         // codec for TCP
+	localAddr                     net.Addr       // local server addr
+	remoteAddr                    net.Addr       // remote peer addr
+	inboundBuffer, outboundBuffer *buf.MsgBuffer // buffer for data from client
+	tlsconn                       *tls.Conn
+	inboundBufferWrite            func([]byte) (int, error)
+	readframe                     func() []byte
 }
 
-func newTCPConn(conn net.Conn, el *eventloop) *stdConn {
-	return &stdConn{
-		conn:          conn,
-		loop:          el,
-		codec:         el.codec,
-		inboundBuffer: prb.Get(),
+func newTCPConn(conn net.Conn, lp *eventloop) *stdConn {
+	c := &stdConn{
+		conn:           conn,
+		loop:           lp,
+		codec:          lp.codec,
+		inboundBuffer:  msgbufpool.Get().(*buf.MsgBuffer),
+		outboundBuffer: msgbufpool.Get().(*buf.MsgBuffer),
 	}
+	c.inboundBufferWrite = c.inboundBuffer.Write
+	c.readframe = c.read
+	return c
 }
 
 func (c *stdConn) releaseTCP() {
 	c.ctx = nil
 	c.localAddr = nil
 	c.remoteAddr = nil
-	prb.Put(c.inboundBuffer)
+	c.inboundBuffer.Reset()
+	c.outboundBuffer.Reset()
+	msgbufpool.Put(c.outboundBuffer)
+	msgbufpool.Put(c.inboundBuffer)
 	c.inboundBuffer = nil
-	bytebuffer.Put(c.buffer)
-	c.buffer = nil
 }
 
-func newUDPConn(el *eventloop, localAddr, remoteAddr net.Addr, buf *bytebuffer.ByteBuffer) *stdConn {
+func newUDPConn(lp *eventloop, localAddr, remoteAddr net.Addr) *stdConn {
 	return &stdConn{
-		loop:       el,
-		localAddr:  localAddr,
-		remoteAddr: remoteAddr,
-		buffer:     buf,
+		loop:          lp,
+		localAddr:     localAddr,
+		remoteAddr:    remoteAddr,
+		inboundBuffer: msgbufpool.Get().(*buf.MsgBuffer),
 	}
 }
 
 func (c *stdConn) releaseUDP() {
 	c.ctx = nil
 	c.localAddr = nil
-	bytebuffer.Put(c.buffer)
-	c.buffer = nil
+	c.inboundBuffer.Reset()
+	msgbufpool.Put(c.inboundBuffer)
+	c.inboundBuffer = nil
 }
-
-func (c *stdConn) read() ([]byte, error) {
-	return c.codec.Decode(c)
+func (c *stdConn) tlsread() (frame []byte) {
+	var err error
+	if !c.tlsconn.HandshakeComplete() {
+		//先判断是否足够一条消息
+		data := c.tlsconn.RawData()
+		if len(data) < 5 || len(data) < 5+int(data[3])<<8|int(data[4]) {
+			return nil
+		}
+		if err := c.tlsconn.Handshake(); err != nil || len(c.tlsconn.RawData()) == 0 {
+			if err != nil {
+				c.Close()
+			}
+			return nil
+		}
+	}
+	for err = c.tlsconn.ReadFrame(); err == nil; err = c.tlsconn.ReadFrame() { //循环读取直到获得
+		frame, err = c.codec.Decode(c)
+		if err != nil {
+			c.Close()
+		}
+		if frame != nil {
+			return frame
+		}
+	}
+	return nil
+}
+func (c *stdConn) read() []byte {
+	frame, err := c.codec.Decode(c)
+	if err != nil {
+		c.Close()
+		return nil
+	}
+	return frame
 }
 
 // ================================= Public APIs of gnet.Conn =================================
 
 func (c *stdConn) Read() []byte {
-	if c.inboundBuffer.IsEmpty() {
-		if c.buffer.Len() == 0 {
-			return nil
-		}
-		return c.buffer.Bytes()
-	}
-	c.byteBuffer = c.inboundBuffer.WithByteBuffer(c.buffer.Bytes())
-	return c.byteBuffer.Bytes()
+	return c.inboundBuffer.Bytes()
 }
 
 func (c *stdConn) ResetBuffer() {
-	c.buffer.Reset()
 	c.inboundBuffer.Reset()
-	bytebuffer.Put(c.byteBuffer)
-	c.byteBuffer = nil
-}
-
-func (c *stdConn) ReadN(n int) (size int, buf []byte) {
-	inBufferLen := c.inboundBuffer.Length()
-	tempBufferLen := c.buffer.Len()
-	if inBufferLen+tempBufferLen < n || n <= 0 {
-		return
-	}
-	size = n
-	if c.inboundBuffer.IsEmpty() {
-		buf = c.buffer.B[:n]
-		return
-	}
-	head, tail := c.inboundBuffer.LazyRead(n)
-	c.byteBuffer = bytebuffer.Get()
-	_, _ = c.byteBuffer.Write(head)
-	_, _ = c.byteBuffer.Write(tail)
-	if inBufferLen >= n {
-		buf = c.byteBuffer.Bytes()
-		return
-	}
-
-	restSize := n - inBufferLen
-	_, _ = c.byteBuffer.Write(c.buffer.B[:restSize])
-	buf = c.byteBuffer.Bytes()
-	return
 }
 
 func (c *stdConn) ShiftN(n int) (size int) {
-	inBufferLen := c.inboundBuffer.Length()
-	tempBufferLen := c.buffer.Len()
-	if inBufferLen+tempBufferLen < n || n <= 0 {
-		c.ResetBuffer()
-		size = inBufferLen + tempBufferLen
-		return
-	}
-	size = n
-	if c.inboundBuffer.IsEmpty() {
-		c.buffer.B = c.buffer.B[n:]
-		return
-	}
+	c.inboundBuffer.Shift(n)
+	return n
+}
 
-	bytebuffer.Put(c.byteBuffer)
-	c.byteBuffer = nil
-
-	if inBufferLen >= n {
-		c.inboundBuffer.Shift(n)
-		return
-	}
-	c.inboundBuffer.Reset()
-
-	restSize := n - inBufferLen
-	c.buffer.B = c.buffer.B[restSize:]
+func (c *stdConn) ReadN(n int) (size int, buf []byte) {
+	buf = c.inboundBuffer.PreBytes(n)
+	size = len(buf)
 	return
 }
 
 func (c *stdConn) BufferLength() int {
-	return c.inboundBuffer.Length() + c.buffer.Len()
+	return c.inboundBuffer.Len()
 }
-
-func (c *stdConn) AsyncWrite(buf []byte) (err error) {
-	var encodedBuf []byte
-	if encodedBuf, err = c.codec.Encode(c, buf); err == nil {
-		c.loop.ch <- func() error {
-			_, _ = c.conn.Write(encodedBuf)
-			return nil
-		}
+func (c *stdConn) OutBufferLength() int {
+	return 0
+}
+func (c *stdConn) AsyncWrite(buf []byte) error {
+	if encodedBuf, err := c.codec.Encode(c, buf); err == nil {
+		o := <-c.loop.outbufchan
+		o.b.Write(encodedBuf)
+		o.c = c
+		c.loop.outChan <- o
+	} else {
+		c.Close()
 	}
-	return
+	return nil
 }
-
+func (c *stdConn) Write(buf []byte) (int, error) {
+	if encodedBuf, err := c.codec.Encode(c, buf); err == nil {
+		o := <-c.loop.outbufchan
+		o.b.Write(encodedBuf)
+		o.c = c
+		c.loop.outChan <- o
+	} else {
+		c.Close()
+	}
+	return len(buf), nil
+}
 func (c *stdConn) SendTo(buf []byte) (err error) {
 	_, err = c.loop.svr.ln.pconn.WriteTo(buf, c.remoteAddr)
-	return
-}
-
-func (c *stdConn) Wake() error {
-	c.loop.ch <- wakeReq{c}
-	return nil
-}
-
-func (c *stdConn) Close() error {
-	c.loop.ch <- func() error {
-		return c.loop.loopCloseConn(c)
-	}
-	return nil
+	return err
 }
 
 func (c *stdConn) Context() interface{}       { return c.ctx }
 func (c *stdConn) SetContext(ctx interface{}) { c.ctx = ctx }
 func (c *stdConn) LocalAddr() net.Addr        { return c.localAddr }
 func (c *stdConn) RemoteAddr() net.Addr       { return c.remoteAddr }
+func (c *stdConn) Wake() error {
+	c.loop.ch <- wakeReq{c}
+	return nil
+}
+func (c *stdConn) Close() error {
+	c.loop.ch <- func() error {
+		c.loop.loopClose(c)
+		return nil
+	}
+	return nil
+}
+func (c *stdConn) UpgradeTls(config *tls.Config) (err error) {
+	c.tlsconn, err = tls.Server(c, c.inboundBuffer, c.outboundBuffer, config.Clone())
+	c.inboundBufferWrite = c.tlsconn.RawWrite
+	c.readframe = c.tlsread
+	//很有可能握手包在UpgradeTls之前发过来了，这里把inboundBuffer剩余数据当做握手数据处理
+	if c.inboundBuffer.Len() > 0 {
+		c.tlsconn.RawWrite(c.inboundBuffer.Bytes())
+		c.inboundBuffer.Reset()
+		if err := c.tlsconn.Handshake(); err != nil {
+			return err
+		}
+	}
+	return err
+}

@@ -10,7 +10,7 @@ package netpoll
 import (
 	"log"
 
-	"github.com/panjf2000/gnet/internal"
+	"github.com/luyu6056/gnet/internal"
 	"golang.org/x/sys/unix"
 )
 

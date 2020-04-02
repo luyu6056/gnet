@@ -4,12 +4,16 @@
 
 package gnet
 
-import "time"
+import (
+	"time"
+
+	"github.com/luyu6056/gnet/tls"
+)
 
 // Option is a function that will set up option.
 type Option func(opts *Options)
 
-func loadOptions(options ...Option) *Options {
+func initOptions(options ...Option) *Options {
 	opts := new(Options)
 	for _, option := range options {
 		option(opts)
@@ -19,18 +23,9 @@ func loadOptions(options ...Option) *Options {
 
 // Options are set when the client opens.
 type Options struct {
-	// Multicore indicates whether the server will be effectively created with multi-cores, if so,
-	// then you must take care with synchronizing memory between all event callbacks, otherwise,
-	// it will run the server with single thread. The number of threads in the server will be automatically
-	// assigned to the value of runtime.NumCPU().
-	Multicore bool
 
-	// LB represents the load-balancing algorithm used when assigning new connections.
-	LB LoadBalancing
-
-	// NumEventLoop is set up to start the given number of event-loop goroutine.
-	// Note: Setting up NumEventLoop will override Multicore.
-	NumEventLoop int
+	//0 will be runtime.NumCPU().
+	LoopNum int
 
 	// ReusePort indicates whether to set up the SO_REUSEPORT socket option.
 	ReusePort bool
@@ -44,8 +39,11 @@ type Options struct {
 	// ICodec encodes and decodes TCP stream.
 	Codec ICodec
 
-	// Logger is the customized logger for logging info, if it is not set, default standard logger from log package is used.
-	Logger Logger
+	MultiOut, Isblock bool
+
+	OutbufNum int
+
+	Tlsconfig *tls.Config
 }
 
 // WithOptions sets up all options.
@@ -55,24 +53,10 @@ func WithOptions(options Options) Option {
 	}
 }
 
-// WithMulticore sets up multi-cores in gnet server.
-func WithMulticore(multicore bool) Option {
+// WithMulticore sets up multi-cores with gnet.
+func WithLoopNum(n int) Option {
 	return func(opts *Options) {
-		opts.Multicore = multicore
-	}
-}
-
-// WithLoadBalancing sets up the load-balancing algorithm in gnet server.
-func WithLoadBalancing(lb LoadBalancing) Option {
-	return func(opts *Options) {
-		opts.LB = lb
-	}
-}
-
-// WithNumEventLoop sets up NumEventLoop in gnet server.
-func WithNumEventLoop(numEventLoop int) Option {
-	return func(opts *Options) {
-		opts.NumEventLoop = numEventLoop
+		opts.LoopNum = n
 	}
 }
 
@@ -104,9 +88,30 @@ func WithCodec(codec ICodec) Option {
 	}
 }
 
-// WithLogger sets up a customized logger.
-func WithLogger(logger Logger) Option {
+//设置为阻塞式
+func WithBlock(block bool) Option {
 	return func(opts *Options) {
-		opts.Logger = logger
+		opts.Isblock = block
+	}
+}
+
+//设置缓冲buf数量，减少能减轻内存占用，但是会阻塞
+func WithOutbuf(n int) Option {
+	return func(opts *Options) {
+		opts.OutbufNum = n
+	}
+}
+
+//开启tls模式
+func WithTls(tlsconfig *tls.Config) Option {
+	return func(opts *Options) {
+		opts.Tlsconfig = tlsconfig
+	}
+}
+
+//true的时候开启与lp数量相等的out gorutine，小文件如hello word在6核i7能达到50万qps，跑测试用。默认false单核能达到10万qps输出，足以撑爆外网带宽，生产环境不建议开启
+func WithMultiOut(b bool) Option {
+	return func(opts *Options) {
+		opts.MultiOut = b
 	}
 }

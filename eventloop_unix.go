@@ -12,52 +12,42 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/panjf2000/gnet/internal/netpoll"
+	"github.com/luyu6056/gnet/internal/netpoll"
 	"golang.org/x/sys/unix"
 )
 
 type eventloop struct {
-	idx          int             // loop index in the server loops list
-	svr          *server         // server in loop
-	codec        ICodec          // codec for TCP
-	packet       []byte          // read packet buffer
-	poller       *netpoll.Poller // epoll or kqueue
-	connCount    int32           // number of active connections in event-loop
-	connections  map[int]*conn   // loop connections fd -> conn
-	eventHandler EventHandler    // user eventHandler
+	idx                 int             // loop index in the server loops list
+	svr                 *server         // server in loop
+	codec               ICodec          // codec for TCP
+	packet              []byte          // read packet buffer
+	poller              *netpoll.Poller // epoll or kqueue
+	connections         []*conn         // loop connections fd -> conn
+	eventHandler        EventHandler    // user eventHandler
+	outbufchan, outChan chan *out
+	outclose            chan bool
+	lazyChan            chan *conn
 }
 
-func (el *eventloop) plusConnCount() {
-	atomic.AddInt32(&el.connCount, 1)
-}
-
-func (el *eventloop) minusConnCount() {
-	atomic.AddInt32(&el.connCount, -1)
-}
-
-func (el *eventloop) loadConnCount() int32 {
-	return atomic.LoadInt32(&el.connCount)
-}
-
-func (el *eventloop) loopRun() {
+func (lp *eventloop) loopRun() {
 	defer func() {
-		if el.idx == 0 && el.svr.opts.Ticker {
-			close(el.svr.ticktock)
+		if lp.idx == 0 && lp.svr.opts.Ticker {
+			close(lp.svr.ticktock)
 		}
-		el.svr.signalShutdown()
+		lp.svr.signalShutdown()
 	}()
 
-	if el.idx == 0 && el.svr.opts.Ticker {
-		go el.loopTicker()
+	if lp.idx == 0 && lp.svr.opts.Ticker {
+		go lp.loopTicker()
 	}
 
-	el.svr.logger.Printf("event-loop:%d exits with error: %v\n", el.idx, el.poller.Polling(el.handleEvent))
+	sniffError(lp.poller.Polling(lp.handleEvent))
 }
 
-func (el *eventloop) loopAccept(fd int) error {
-	if fd == el.svr.ln.fd {
-		if el.svr.ln.pconn != nil {
-			return el.loopReadUDP(fd)
+func (lp *eventloop) loopAccept(fd int) error {
+	if fd == lp.svr.ln.fd {
+		if lp.svr.ln.pconn != nil {
+			return lp.loopUDPIn(fd)
 		}
 		nfd, sa, err := unix.Accept(fd)
 		if err != nil {
@@ -66,161 +56,115 @@ func (el *eventloop) loopAccept(fd int) error {
 			}
 			return err
 		}
-		if err = unix.SetNonblock(nfd, true); err != nil {
+		if !lp.svr.Isblock {
+			if err := unix.SetNonblock(nfd, true); err != nil {
+				return err
+			}
+		}
+
+		newlp := lp.svr.subLoopGroup.getbyfd(nfd)
+		c := newTCPConn(nfd, newlp, sa)
+		if lp.svr.tlsconfig != nil {
+			if err = c.UpgradeTls(lp.svr.tlsconfig); err != nil {
+				return err
+			}
+		}
+		newlp.poller.Trigger(func() (err error) {
+			if err = newlp.poller.AddRead(c.fd); err == nil {
+				index := c.fd / newlp.svr.subLoopGroup.len()
+				if index >= len(newlp.connections) {
+					newlp.connections = append(newlp.connections, make([]*conn, len(newlp.connections))...)
+				}
+				newlp.connections[index] = c
+				return newlp.loopOpen(c)
+			}
 			return err
-		}
-		c := newTCPConn(nfd, el, sa)
-		if err = el.poller.AddRead(c.fd); err == nil {
-			el.connections[c.fd] = c
-			el.plusConnCount()
-			return el.loopOpen(c)
-		}
-		return err
+		})
 	}
+
 	return nil
 }
 
-func (el *eventloop) loopOpen(c *conn) error {
-	c.opened = true
-	c.localAddr = el.svr.ln.lnaddr
+func (lp *eventloop) loopOpen(c *conn) error {
+	c.opened = 1
+	c.localAddr = lp.svr.ln.lnaddr
 	c.remoteAddr = netpoll.SockaddrToTCPOrUnixAddr(c.sa)
-	out, action := el.eventHandler.OnOpened(c)
-	if el.svr.opts.TCPKeepAlive > 0 {
-		if _, ok := el.svr.ln.ln.(*net.TCPListener); ok {
-			_ = netpoll.SetKeepAlive(c.fd, int(el.svr.opts.TCPKeepAlive/time.Second))
+	out, action := lp.eventHandler.OnOpened(c)
+	if lp.svr.opts.TCPKeepAlive > 0 {
+		if _, ok := lp.svr.ln.ln.(*net.TCPListener); ok {
+			_ = netpoll.SetKeepAlive(c.fd, int(lp.svr.opts.TCPKeepAlive/time.Second))
 		}
 	}
 	if out != nil {
-		c.open(out)
+		c.write(out)
 	}
-
-	if !c.outboundBuffer.IsEmpty() {
-		_ = el.poller.AddWrite(c.fd)
-	}
-
-	return el.handleAction(c, action)
+	return lp.handleAction(c, action)
 }
 
-func (el *eventloop) loopRead(c *conn) error {
-	n, err := unix.Read(c.fd, el.packet)
+func (lp *eventloop) loopIn(c *conn) error {
+
+	n, err := unix.Read(c.fd, lp.packet)
 	if n == 0 || err != nil {
 		if err == unix.EAGAIN {
 			return nil
 		}
-		return el.loopCloseConn(c, err)
+		return lp.loopCloseConn(c, err)
 	}
-	c.buffer = el.packet[:n]
 
-	for inFrame, _ := c.read(); inFrame != nil; inFrame, _ = c.read() {
-		out, action := el.eventHandler.React(inFrame, c)
-		if out != nil {
-			outFrame, _ := el.codec.Encode(c, out)
-			el.eventHandler.PreWrite()
-			c.write(outFrame)
-		}
+	c.inboundBufferWrite(lp.packet[:n])
+
+	for inFrame := c.readframe(); inFrame != nil; inFrame = c.readframe() {
+		action := lp.eventHandler.React(inFrame, c)
 		switch action {
-		case None:
 		case Close:
-			_ = el.loopWrite(c)
-			return el.loopCloseConn(c, nil)
-		case Shutdown:
-			_ = el.loopWrite(c)
-			return ErrServerShutdown
-		}
-		if !c.opened {
-			return nil
-		}
-	}
-	_, _ = c.inboundBuffer.Write(c.buffer)
-
-	return nil
-}
-
-func (el *eventloop) loopWrite(c *conn) error {
-	el.eventHandler.PreWrite()
-
-	head, tail := c.outboundBuffer.LazyReadAll()
-	n, err := unix.Write(c.fd, head)
-	if err != nil {
-		if err == unix.EAGAIN {
-			return nil
-		}
-		return el.loopCloseConn(c, err)
-	}
-	c.outboundBuffer.Shift(n)
-
-	if len(head) == n && tail != nil {
-		n, err = unix.Write(c.fd, tail)
-		if err != nil {
-			if err == unix.EAGAIN {
-				return nil
-			}
-			return el.loopCloseConn(c, err)
-		}
-		c.outboundBuffer.Shift(n)
-	}
-
-	if c.outboundBuffer.IsEmpty() {
-		_ = el.poller.ModRead(c.fd)
-	}
-	return nil
-}
-
-func (el *eventloop) loopCloseConn(c *conn, err error) error {
-	err0, err1 := el.poller.Delete(c.fd), unix.Close(c.fd)
-	if err0 == nil && err1 == nil {
-		delete(el.connections, c.fd)
-		el.minusConnCount()
-		switch el.eventHandler.OnClosed(c, err) {
+			return lp.loopCloseConn(c, nil)
 		case Shutdown:
 			return ErrServerShutdown
 		}
-		c.releaseTCP()
-	} else {
-		if err0 != nil {
-			el.svr.logger.Printf("failed to delete fd:%d from poller, error:%v\n", c.fd, err0)
-		}
-		if err1 != nil {
-			el.svr.logger.Printf("failed to close fd:%d, error:%v\n", c.fd, err1)
-		}
+
+	}
+
+	return nil
+}
+
+func (lp *eventloop) loopCloseConn(c *conn, err error) error {
+	if atomic.CompareAndSwapInt32(&c.opened, 1, 0) {
+		c.loop.eventHandler.OnClosed(c, err)
+		c.loop.connections[c.fd/lp.svr.subLoopGroup.len()] = nil
+		lp.lazyChan <- c //进行最后的输出
 	}
 	return nil
 }
 
-func (el *eventloop) loopWake(c *conn) error {
-	//if co, ok := el.connections[c.fd]; !ok || co != c {
-	//	return nil // ignore stale wakes.
-	//}
-	out, action := el.eventHandler.React(nil, c)
-	if out != nil {
-		frame, _ := el.codec.Encode(c, out)
-		c.write(frame)
+func (lp *eventloop) loopWake(c *conn) error {
+
+	if co := lp.connections[c.fd/lp.svr.subLoopGroup.len()]; co != c {
+		return nil // ignore stale wakes.
 	}
-	return el.handleAction(c, action)
+
+	action := lp.eventHandler.React(nil, c)
+	return lp.handleAction(c, action)
 }
 
-func (el *eventloop) loopTicker() {
+func (lp *eventloop) loopTicker() {
 	var (
 		delay time.Duration
 		open  bool
-		err   error
 	)
 	for {
-		err = el.poller.Trigger(func() (err error) {
-			delay, action := el.eventHandler.Tick()
-			el.svr.ticktock <- delay
+		if err := lp.poller.Trigger(func() (err error) {
+			delay, action := lp.eventHandler.Tick()
+			lp.svr.ticktock <- delay
 			switch action {
 			case None:
 			case Shutdown:
 				err = ErrServerShutdown
 			}
 			return
-		})
-		if err != nil {
-			el.svr.logger.Printf("failed to awake poller with error:%v, stopping ticker\n", err)
+		}); err != nil {
 			break
 		}
-		if delay, open = <-el.svr.ticktock; open {
+		if delay, open = <-lp.svr.ticktock; open {
 			time.Sleep(delay)
 		} else {
 			break
@@ -228,35 +172,27 @@ func (el *eventloop) loopTicker() {
 	}
 }
 
-func (el *eventloop) handleAction(c *conn, action Action) error {
+func (lp *eventloop) handleAction(c *conn, action Action) error {
 	switch action {
 	case None:
 		return nil
 	case Close:
-		_ = el.loopWrite(c)
-		return el.loopCloseConn(c, nil)
+		return lp.loopCloseConn(c, nil)
 	case Shutdown:
-		_ = el.loopWrite(c)
 		return ErrServerShutdown
 	default:
 		return nil
 	}
 }
 
-func (el *eventloop) loopReadUDP(fd int) error {
-	n, sa, err := unix.Recvfrom(fd, el.packet, 0)
+func (lp *eventloop) loopUDPIn(fd int) error {
+	n, sa, err := unix.Recvfrom(fd, lp.packet, 0)
 	if err != nil || n == 0 {
-		if err != nil && err != unix.EAGAIN {
-			el.svr.logger.Printf("failed to read UPD packet from fd:%d, error:%v\n", fd, err)
-		}
 		return nil
 	}
-	c := newUDPConn(fd, el, sa)
-	out, action := el.eventHandler.React(el.packet[:n], c)
-	if out != nil {
-		el.eventHandler.PreWrite()
-		_ = c.sendTo(out)
-	}
+	c := newUDPConn(fd, lp, sa)
+	action := lp.eventHandler.React(lp.packet[:n], c)
+
 	switch action {
 	case Shutdown:
 		return ErrServerShutdown

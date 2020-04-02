@@ -8,21 +8,10 @@
 package gnet
 
 import (
-	"hash/crc32"
 	"time"
 
-	"github.com/panjf2000/gnet/pool/bytebuffer"
+	"github.com/luyu6056/gnet/buf"
 )
-
-// hashCode hashes a string to a unique hashcode.
-func hashCode(s string) int {
-	v := int(crc32.ChecksumIEEE([]byte(s)))
-	if v >= 0 {
-		return v
-	} else {
-		return -v
-	}
-}
 
 func (svr *server) listenerRun() {
 	var err error
@@ -36,11 +25,10 @@ func (svr *server) listenerRun() {
 				err = e
 				return
 			}
-			buf := bytebuffer.Get()
-			_, _ = buf.Write(packet[:n])
-
-			el := svr.subLoopGroup.next(hashCode(addr.String()))
-			el.ch <- &udpIn{newUDPConn(el, svr.ln.lnaddr, addr, buf)}
+			el := svr.subLoopGroup.next()
+			c := newUDPConn(el, svr.ln.lnaddr, addr)
+			c.inboundBuffer.Write(packet[:n])
+			el.ch <- &udpIn{c}
 		} else {
 			// Accept TCP socket.
 			conn, e := svr.ln.ln.Accept()
@@ -48,8 +36,13 @@ func (svr *server) listenerRun() {
 				err = e
 				return
 			}
-			el := svr.subLoopGroup.next(hashCode(conn.RemoteAddr().String()))
+			el := svr.subLoopGroup.next()
 			c := newTCPConn(conn, el)
+			if svr.tlsconfig != nil {
+				if err = c.UpgradeTls(svr.tlsconfig); err != nil {
+					return
+				}
+			}
 			el.ch <- c
 			go func() {
 				var packet [0x10000]byte
@@ -60,9 +53,10 @@ func (svr *server) listenerRun() {
 						el.ch <- &stderr{c, err}
 						return
 					}
-					buf := bytebuffer.Get()
-					_, _ = buf.Write(packet[:n])
-					el.ch <- &tcpIn{c, buf}
+
+					msg := msgbufpool.Get().(*buf.MsgBuffer)
+					msg.Write(packet[:n])
+					el.ch <- &tcpIn{c, msg}
 				}
 			}()
 		}
