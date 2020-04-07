@@ -109,6 +109,8 @@ type Conn struct {
 // A halfConn represents one direction of the record layer
 // connection, either sending or receiving.
 type halfConn struct {
+	sync.Mutex
+
 	err            error       // first permanent error
 	version        uint16      // protocol version
 	cipher         interface{} // cipher algorithm
@@ -510,8 +512,10 @@ func (c *Conn) newRecordHeaderError(conn conn, msg string) (err RecordHeaderErro
 }
 
 func (c *Conn) readRecord() error {
-
-	return c.readRecordOrCCS(false)
+	if c.rawInput.Len() > 5 {
+		return c.readRecordOrCCS(false)
+	}
+	return io.EOF
 }
 
 func (c *Conn) readChangeCipherSpec() error {
@@ -813,9 +817,11 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (n int, err error)
 
 	for maxPayload := c.maxPayloadSizeForWrite(typ); len(data) > 0; maxPayload = c.maxPayloadSizeForWrite(typ) {
 		m := len(data)
-		if m > maxPayload {
+		if maxPayload := c.maxPayloadSizeForWrite(typ); m > maxPayload {
 			m = maxPayload
 		}
+
+		_, c.outBuf = sliceForAppend(c.outBuf[:0], recordHeaderLen)
 		c.outBuf[0] = byte(typ)
 		/*vers := c.vers
 		if vers == 0 {
@@ -832,7 +838,7 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (n int, err error)
 		c.outBuf[3] = byte(m >> 8)
 		c.outBuf[4] = byte(m)
 
-		c.outBuf, err = c.out.encrypt(c.outBuf[:5], data[:m], c.config.rand())
+		c.outBuf, err = c.out.encrypt(c.outBuf, data[:m], c.config.rand())
 		if err != nil {
 			return n, err
 		}
@@ -855,6 +861,7 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (n int, err error)
 // writeRecord writes a TLS record with the given type and payload to the
 // connection and updates the record layer state.
 func (c *Conn) writeRecord(typ recordType, data []byte) (int, error) {
+
 	return c.writeRecordLocked(typ, data)
 }
 
@@ -950,9 +957,11 @@ var (
 // Write writes data to the connection.
 func (c *Conn) Write(b []byte) error {
 	// interlock with Close below
+
 	if c.handshakeStatus != 255 {
 		return nil
 	}
+
 	c.buffering = false
 
 	if err := c.out.err; err != nil {
@@ -1185,6 +1194,7 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 	c.in.setTrafficSecret(cipherSuite, newSecret)
 
 	if keyUpdate.updateRequested {
+
 		msg := &keyUpdateMsg{}
 		_, err := c.writeRecordLocked(recordTypeHandshake, msg.marshal())
 		if err != nil {
