@@ -8,7 +8,6 @@
 package gnet
 
 import (
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -97,10 +96,7 @@ func (c *conn) tlsread() (frame []byte) {
 		}
 		if err := c.tlsconn.Handshake(); err != nil {
 			if err != nil {
-				fmt.Println("tlsread错误", err)
-				_ = c.loop.poller.Trigger(func() error {
-					return c.loop.loopCloseConn(c, err)
-				})
+				return
 			}
 		}
 		if !c.tlsconn.HandshakeComplete() || len(c.tlsconn.RawData()) == 0 { //握手没成功，或者握手成功，但是没有数据黏包了
@@ -224,5 +220,11 @@ func (c *conn) UpgradeTls(config *tls.Config) (err error) {
 			return err
 		}
 	}
+	//握手失败的关了
+	time.AfterFunc(time.Second*5, func() {
+		if c.opened == 1 && (c.tlsconn == nil || !c.tlsconn.HandshakeComplete()) {
+			c.Close()
+		}
+	})
 	return err
 }
