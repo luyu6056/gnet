@@ -815,7 +815,7 @@ func (c *Conn) flush() (int, error) {
 // connection and updates the record layer state.
 func (c *Conn) writeRecordLocked(typ recordType, data []byte) (n int, err error) {
 
-	for maxPayload := c.maxPayloadSizeForWrite(typ); len(data) > 0; maxPayload = c.maxPayloadSizeForWrite(typ) {
+	for len(data) > 0 {
 		m := len(data)
 		if maxPayload := c.maxPayloadSizeForWrite(typ); m > maxPayload {
 			m = maxPayload
