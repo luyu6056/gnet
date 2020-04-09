@@ -86,7 +86,7 @@ func (lp *eventloop) loopAccept(fd int) error {
 }
 
 func (lp *eventloop) loopOpen(c *conn) error {
-	c.opened = 1
+	c.opened = connStateOk
 	c.localAddr = lp.svr.ln.lnaddr
 	c.remoteAddr = netpoll.SockaddrToTCPOrUnixAddr(c.sa)
 	out, action := lp.eventHandler.OnOpened(c)
@@ -108,27 +108,27 @@ func (lp *eventloop) loopIn(c *conn) error {
 		if err == unix.EAGAIN {
 			return nil
 		}
+		c.opened = connStateCloseReady
 		return lp.loopCloseConn(c, err)
 	}
 
 	c.inboundBufferWrite(lp.packet[:n])
 
-	for inFrame := c.readframe(); inFrame != nil; inFrame = c.readframe() {
-		action := lp.eventHandler.React(inFrame, c)
-		switch action {
+	for inFrame := c.readframe(); inFrame != nil && c.opened == connStateOk; inFrame = c.readframe() {
+		switch lp.eventHandler.React(inFrame, c) {
 		case Close:
+			c.opened = connStateCloseReady
 			return lp.loopCloseConn(c, nil)
 		case Shutdown:
 			return ErrServerShutdown
 		}
 
 	}
-
 	return nil
 }
 
 func (lp *eventloop) loopCloseConn(c *conn, err error) error {
-	if atomic.CompareAndSwapInt32(&c.opened, 1, 0) {
+	if atomic.CompareAndSwapInt32(&c.opened, connStateCloseReady, connStateCloseLazyout) {
 		c.loop.eventHandler.OnClosed(c, err)
 		c.loop.connections[c.fd/lp.svr.subLoopGroup.len()] = nil
 		lp.lazyChan <- c //进行最后的输出
@@ -177,6 +177,7 @@ func (lp *eventloop) handleAction(c *conn, action Action) error {
 	case None:
 		return nil
 	case Close:
+		c.opened = connStateCloseReady
 		return lp.loopCloseConn(c, nil)
 	case Shutdown:
 		return ErrServerShutdown

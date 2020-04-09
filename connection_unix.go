@@ -8,14 +8,20 @@
 package gnet
 
 import (
-	"net"
-	"sync"
-	"time"
-
 	"github.com/luyu6056/gnet/buf"
 	"github.com/luyu6056/gnet/internal/netpoll"
 	"github.com/luyu6056/gnet/tls"
 	"golang.org/x/sys/unix"
+	"net"
+	"sync"
+	"time"
+)
+
+const (
+	connStateOk           = 1
+	connStateCloseReady   = -0
+	connStateCloseLazyout = -1
+	connStateCloseOk      = -2
 )
 
 var msgbufpool = sync.Pool{New: func() interface{} {
@@ -92,42 +98,47 @@ func (c *conn) tlsread() (frame []byte) {
 		//先判断是否足够一条消息
 		data := c.tlsconn.RawData()
 		if len(data) < 5 || len(data) < 5+int(data[3])<<8|int(data[4]) {
-			return nil
+			return
 		}
-		if err := c.tlsconn.Handshake(); err != nil {
+		if err = c.tlsconn.Handshake(); err != nil {
 			if err != nil {
+				c.opened = connStateCloseReady
+				_ = c.loop.poller.Trigger(func() error {
+					return c.loop.loopCloseConn(c, err)
+				})
 				return
 			}
 		}
 		if !c.tlsconn.HandshakeComplete() || len(c.tlsconn.RawData()) == 0 { //握手没成功，或者握手成功，但是没有数据黏包了
-			return nil
+			return
 		}
 	}
 
 	for err = c.tlsconn.ReadFrame(); err == nil; err = c.tlsconn.ReadFrame() { //循环读取直到获得
 		frame, err = c.codec.Decode(c)
 		if err != nil {
+			c.opened = connStateCloseReady
 			_ = c.loop.poller.Trigger(func() error {
 				return c.loop.loopCloseConn(c, err)
 			})
+			return
 		}
 		if frame != nil {
-			return frame
+			return
 		}
 	}
-	return nil
+	return
 }
 func (c *conn) read() []byte {
 	frame, err := c.codec.Decode(c)
 	if err != nil {
+		c.opened = connStateCloseReady
 		_ = c.loop.poller.Trigger(func() error {
 			return c.loop.loopCloseConn(c, err)
 		})
-		return nil
 	}
 	return frame
 }
-
 func (c *conn) write(buf []byte) {
 	o := <-c.loop.outbufchan
 	o.c = c
@@ -180,8 +191,10 @@ func (c *conn) AsyncWrite(buf []byte) error {
 		o.b.Write(buf)
 		c.loop.outChan <- o
 	} else if err != nil {
+		c.opened = connStateCloseReady
 		_ = c.loop.poller.Trigger(func() error {
 			return c.loop.loopCloseConn(c, err)
+
 		})
 	}
 	return err
@@ -203,6 +216,7 @@ func (c *conn) SetContext(ctx interface{}) { c.ctx = ctx }
 func (c *conn) LocalAddr() net.Addr        { return c.localAddr }
 func (c *conn) RemoteAddr() net.Addr       { return c.remoteAddr }
 func (c *conn) Close() error {
+	c.opened = connStateCloseReady
 	_ = c.loop.poller.Trigger(func() error {
 		return c.loop.loopCloseConn(c, nil)
 	})
@@ -222,7 +236,7 @@ func (c *conn) UpgradeTls(config *tls.Config) (err error) {
 	}
 	//握手失败的关了
 	time.AfterFunc(time.Second*5, func() {
-		if c.opened == 1 && (c.tlsconn == nil || !c.tlsconn.HandshakeComplete()) {
+		if c.opened == connStateOk && (c.tlsconn == nil || !c.tlsconn.HandshakeComplete()) {
 			c.Close()
 		}
 	})

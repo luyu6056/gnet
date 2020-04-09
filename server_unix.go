@@ -194,7 +194,8 @@ func (svr *server) stop() {
 		sniffError(lp.poller.Trigger(func() error {
 			for _, c := range lp.connections {
 				if c != nil {
-					//sniffError(lp.loopCloseConn(c, ErrServerShutdown))
+					c.opened = 0
+					sniffError(lp.loopCloseConn(c, ErrServerShutdown))
 				}
 
 			}
@@ -555,7 +556,7 @@ func (o *out) write() {
 		o.b.Reset()
 		o.outbufchan <- o
 	}()
-	if atomic.LoadInt32(&c.opened) > -1 {
+	if atomic.LoadInt32(&c.opened) > connStateCloseOk {
 		if c.tlsconn != nil {
 			c.tlsconn.Write(o.b.Bytes())
 			o.b.Reset()
@@ -576,9 +577,8 @@ func (o *out) write() {
 			for c.outboundBuffer.Len() > 0 {
 				n, err := unix.Write(c.fd, c.outboundBuffer.Bytes())
 				if n <= 0 || err != nil {
-					c.outboundBuffer.Write(o.b.Bytes())
-					o.b.Reset()
 					if err == unix.EAGAIN {
+						c.outboundBuffer.Write(o.b.Bytes())
 						c.eagainNum++
 						time.AfterFunc(delay*c.eagainNum, func() { o.lazyChan <- c })
 						return
@@ -591,9 +591,8 @@ func (o *out) write() {
 			for o.b.Len() > 0 {
 				n, err := unix.Write(c.fd, o.b.Bytes())
 				if n <= 0 || err != nil {
-					c.outboundBuffer.Write(o.b.Bytes())
-					o.b.Reset()
 					if err == unix.EAGAIN {
+						c.outboundBuffer.Write(o.b.Bytes())
 						c.eagainNum++
 						time.AfterFunc(delay*c.eagainNum, func() { o.lazyChan <- c })
 						return
@@ -609,7 +608,7 @@ func (o *out) write() {
 
 }
 func (c *conn) lazywrite() {
-	if atomic.LoadInt32(&c.opened) > -1 {
+	if atomic.LoadInt32(&c.opened) > connStateCloseOk {
 		for c.outboundBuffer.Len() > 0 {
 			n, err := unix.Write(c.fd, c.outboundBuffer.Bytes())
 			if n <= 0 || err != nil {
@@ -618,18 +617,18 @@ func (c *conn) lazywrite() {
 					time.AfterFunc(delay*c.eagainNum, func() { c.loop.lazyChan <- c })
 					break
 				}
-				if atomic.LoadInt32(&c.opened) == 1 {
+				if atomic.LoadInt32(&c.opened) == connStateOk {
 					c.Close()
 				}
 				break
 			}
 			c.outboundBuffer.Shift(n)
 		}
-		if c.opened == 0 { //彻底删除close的c
+		if c.opened == connStateCloseLazyout { //彻底删除close的c
 			if c.tlsconn != nil {
 				c.tlsconn.CloseWrite()
 			}
-			c.opened = -1
+			c.opened = connStateCloseOk
 			unix.Close(c.fd)
 			c.loop.poller.Delete(c.fd)
 			c.releaseTCP()
