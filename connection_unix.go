@@ -8,13 +8,15 @@
 package gnet
 
 import (
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/luyu6056/gnet/buf"
 	"github.com/luyu6056/gnet/internal/netpoll"
 	"github.com/luyu6056/gnet/tls"
 	"golang.org/x/sys/unix"
-	"net"
-	"sync"
-	"time"
 )
 
 const (
@@ -101,8 +103,7 @@ func (c *conn) tlsread() (frame []byte) {
 			return
 		}
 		if err = c.tlsconn.Handshake(); err != nil {
-			if err != nil {
-				c.opened = connStateCloseReady
+			if err != nil && atomic.CompareAndSwapInt32(&c.opened, connStateOk, connStateCloseReady) {
 				_ = c.loop.poller.Trigger(func() error {
 					return c.loop.loopCloseConn(c, err)
 				})
@@ -116,8 +117,7 @@ func (c *conn) tlsread() (frame []byte) {
 
 	for err = c.tlsconn.ReadFrame(); err == nil; err = c.tlsconn.ReadFrame() { //循环读取直到获得
 		frame, err = c.codec.Decode(c)
-		if err != nil {
-			c.opened = connStateCloseReady
+		if err != nil && atomic.CompareAndSwapInt32(&c.opened, connStateOk, connStateCloseReady) {
 			_ = c.loop.poller.Trigger(func() error {
 				return c.loop.loopCloseConn(c, err)
 			})
@@ -131,8 +131,7 @@ func (c *conn) tlsread() (frame []byte) {
 }
 func (c *conn) read() []byte {
 	frame, err := c.codec.Decode(c)
-	if err != nil {
-		c.opened = connStateCloseReady
+	if err != nil && atomic.CompareAndSwapInt32(&c.opened, connStateOk, connStateCloseReady) {
 		_ = c.loop.poller.Trigger(func() error {
 			return c.loop.loopCloseConn(c, err)
 		})
@@ -190,8 +189,7 @@ func (c *conn) AsyncWrite(buf []byte) error {
 		o.c = c
 		o.b.Write(buf)
 		c.loop.outChan <- o
-	} else if err != nil {
-		c.opened = connStateCloseReady
+	} else if err != nil && atomic.CompareAndSwapInt32(&c.opened, connStateOk, connStateCloseReady) {
 		_ = c.loop.poller.Trigger(func() error {
 			return c.loop.loopCloseConn(c, err)
 
@@ -216,10 +214,11 @@ func (c *conn) SetContext(ctx interface{}) { c.ctx = ctx }
 func (c *conn) LocalAddr() net.Addr        { return c.localAddr }
 func (c *conn) RemoteAddr() net.Addr       { return c.remoteAddr }
 func (c *conn) Close() error {
-	c.opened = connStateCloseReady
-	_ = c.loop.poller.Trigger(func() error {
-		return c.loop.loopCloseConn(c, nil)
-	})
+	if atomic.CompareAndSwapInt32(&c.opened, connStateOk, connStateCloseReady) {
+		_ = c.loop.poller.Trigger(func() error {
+			return c.loop.loopCloseConn(c, nil)
+		})
+	}
 	return nil
 }
 func (c *conn) UpgradeTls(config *tls.Config) (err error) {

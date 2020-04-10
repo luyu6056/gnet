@@ -18,7 +18,6 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -478,12 +477,10 @@ func (svr *server) msgOut(bufnum int) {
 				o.write()
 			}
 			if c != nil {
-
 				c.lazywrite()
 			}
 			for i := len(svr.lazyChan); i > 0; i-- {
 				c := <-svr.lazyChan
-
 				c.lazywrite()
 			}
 		}
@@ -556,7 +553,7 @@ func (o *out) write() {
 		o.b.Reset()
 		o.outbufchan <- o
 	}()
-	if atomic.LoadInt32(&c.opened) > connStateCloseOk {
+	if c.opened != connStateCloseOk {
 		if c.tlsconn != nil {
 			c.tlsconn.Write(o.b.Bytes())
 			o.b.Reset()
@@ -608,7 +605,7 @@ func (o *out) write() {
 
 }
 func (c *conn) lazywrite() {
-	if atomic.LoadInt32(&c.opened) > connStateCloseOk {
+	if c.opened != connStateCloseOk {
 		for c.outboundBuffer.Len() > 0 {
 			n, err := unix.Write(c.fd, c.outboundBuffer.Bytes())
 			if n <= 0 || err != nil {
@@ -617,17 +614,13 @@ func (c *conn) lazywrite() {
 					time.AfterFunc(delay*c.eagainNum, func() { c.loop.lazyChan <- c })
 					break
 				}
-				if atomic.LoadInt32(&c.opened) == connStateOk {
-					c.Close()
-				}
+				c.Close()
 				break
 			}
 			c.outboundBuffer.Shift(n)
 		}
 		if c.opened == connStateCloseLazyout { //彻底删除close的c
-			if c.tlsconn != nil {
-				c.tlsconn.CloseWrite()
-			}
+
 			c.opened = connStateCloseOk
 			unix.Close(c.fd)
 			c.loop.poller.Delete(c.fd)
