@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -164,7 +165,7 @@ func (req *Request) Parsereq(data []byte) (n int, out []byte, err error) {
 	for k := range req.Header {
 		delete(req.Header, k)
 	}
-	//var top string
+	var line string
 	var clen int
 	var q = -1
 	// method, path, proto line
@@ -195,36 +196,63 @@ func (req *Request) Parsereq(data []byte) (n int, out []byte, err error) {
 		}
 	}
 	switch req.Proto {
-	case "":
-		return 0, nil, fmt.Errorf("malformed request")
 	case "HTTP/1.0":
 		req.Connection = "close"
-	default:
+	case "HTTP/1.1":
 		req.Connection = "keep-alive"
+	default:
+		return 0, nil, fmt.Errorf("malformed request")
 	}
-
 	for s += 2; s < l; s += i + 2 {
 		i = bytes.Index(data[s:], []byte{13, 10})
-
+		line = sdata[s : s+i]
 		if i > 15 {
-			line := sdata[s : s+i]
-
 			switch {
 			case line[:15] == "Content-Length:", line[:15] == "Content-length:":
 				clen, _ = strconv.Atoi(line[16:])
-			case line[:11] == "Connection:":
-				req.Connection = line[12:]
+			case line == "Connection: close", line == "Connection: Close":
+				req.Connection = "close"
 			default:
 				j := bytes.IndexByte(data[s:s+i], 58)
 				req.Header[line[:j]] = line[j+2:]
 			}
 		} else if i == 0 {
 			s += i + 2
-			if l-s < clen {
-				break
-			}
+			if clen == 0 && req.Header["Transfer-Encoding"] == "chunked" {
 
-			return s + clen, data[s : s+clen], nil
+				for ; s < l; s += 2 {
+					i = bytes.Index(data[s:], []byte{13, 10})
+					b := make([]byte, 8)
+					if i&1 == 0 {
+						hex.Decode(b[8-i/2:], data[s:s+i])
+					} else {
+						tmp, _ := hex.DecodeString("0" + sdata[s:s+i])
+						copy(b[7-i/2:], tmp)
+
+					}
+					clen = int(b[0])<<56 | int(b[1])<<48 | int(b[2])<<40 | int(b[3])<<32 | int(b[4])<<24 | int(b[5])<<16 | int(b[6])<<8 | int(b[7])
+					s += i + 2
+					if l-s < clen {
+						return 0, nil, nil
+					}
+					if clen > 0 {
+						out = append(out, data[s:s+clen]...)
+						s += clen
+					} else if l-s == 2 && data[s] == 13 && data[s+1] == 10 {
+						return s + 2, out, nil
+					}
+
+				}
+
+			} else {
+				if l-s < clen {
+					return 0, nil, nil
+				}
+				return s + clen, data[s : s+clen], nil
+			}
+		} else {
+			j := bytes.IndexByte(data[s:s+i], 58)
+			req.Header[line[:j]] = line[j+2:]
 		}
 
 	}
