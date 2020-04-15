@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -203,7 +204,6 @@ func (c *Conn) clientHandshake() (err error) {
 			// In TLS 1.3, session tickets are delivered after the handshake.
 			return c.hs.handshake()
 		}
-
 		hs := &clientHandshakeState{
 			c:           c,
 			serverHello: serverHello,
@@ -216,9 +216,10 @@ func (c *Conn) clientHandshake() (err error) {
 		if err := hs.handshake(); err != nil {
 			return err
 		}
-
-	case 3, 4:
+	case 3, 4, 5:
 		c.hs.handshake()
+	default:
+		return errors.New("tls handshakeStatus error:" + strconv.Itoa(int(c.handshakeStatus)))
 	}
 	return nil
 }
@@ -362,31 +363,31 @@ func (c *Conn) pickTLSVersion(serverHello *serverHelloMsg) error {
 
 // Does the handshake, either a full one or resumes old session. Requires hs.c,
 // hs.hello, hs.serverHello, and, optionally, hs.session to be set.
-func (hs *clientHandshakeState) handshake() error {
+func (hs *clientHandshakeState) handshake() (err error) {
 	c := hs.c
-	isResume, err := hs.processServerHello()
-	if err != nil {
-		return err
-	}
-	if c.handshakeStatus == 2 {
 
+	if c.handshakeStatus == 2 {
+		c.didResume, err = hs.processServerHello()
+		if err != nil {
+			return err
+		}
 		hs.finishedHash = newFinishedHash(c.vers, hs.suite)
 
 		// No signatures of the handshake are needed in a resumption.
 		// Otherwise, in a full handshake, if we don't have any certificates
 		// configured then we will never send a CertificateVerify message and
 		// thus no signatures are needed in that case either.
-		if isResume || (len(c.config.Certificates) == 0 && c.config.GetClientCertificate == nil) {
+		if c.didResume || (len(c.config.Certificates) == 0 && c.config.GetClientCertificate == nil) {
 			hs.finishedHash.discardHandshakeBuffer()
 		}
 
 		hs.finishedHash.Write(hs.hello.marshal())
 		hs.finishedHash.Write(hs.serverHello.marshal())
-
+		c.handshakeStatus = 3
 		//c.buffering = true
 	}
 
-	if isResume {
+	if c.didResume {
 		if err := hs.establishKeys(); err != nil {
 			return err
 		}
@@ -405,13 +406,13 @@ func (hs *clientHandshakeState) handshake() error {
 		}
 	} else {
 		switch c.handshakeStatus {
-		case 2:
+		case 3:
 			if err := hs.doFullHandshakeStep1(); err != nil {
 				return err
 			}
-			c.handshakeStatus = 3
+			c.handshakeStatus = 4
 			return nil
-		case 3:
+		case 4:
 			if err := hs.doFullHandshakeStep2(); err != nil {
 				return err
 			}
@@ -423,9 +424,9 @@ func (hs *clientHandshakeState) handshake() error {
 			}
 			_, err := c.flush()
 
-			c.handshakeStatus = 4
+			c.handshakeStatus = 5
 			return err
-		case 4:
+		case 5:
 			c.clientFinishedIsFirst = true
 			if err := hs.readSessionTicket(); err != nil {
 				return err
@@ -437,7 +438,7 @@ func (hs *clientHandshakeState) handshake() error {
 	}
 
 	c.ekm = ekmFromMasterSecret(c.vers, hs.suite, hs.masterSecret, hs.hello.random, hs.serverHello.random)
-	c.didResume = isResume
+
 	c.handshakeStatus = 255
 	// If we had a successful handshake and hs.session is different from
 	// the one already cached - cache a new one.
@@ -468,11 +469,11 @@ func (hs *clientHandshakeState) doFullHandshakeStep1() error {
 	certMsg, ok := msg.(*certificateMsg)
 	if !ok || len(certMsg.certificates) == 0 {
 		c.sendAlert(alertUnexpectedMessage)
+
 		return unexpectedMessageError(certMsg, msg)
 	}
 	hs.finishedHash.Write(certMsg.marshal())
-
-	if c.handshakes == 1 {
+	if c.handshakes == 1 || len(c.peerCertificates) == 0 {
 		// If this is the first handshake on a connection, process and
 		// (optionally) verify the server's certificates.
 		if err := c.verifyServerCertificate(certMsg.certificates); err != nil {

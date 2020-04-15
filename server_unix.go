@@ -293,8 +293,9 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 			}
 			f.WriteString(strconv.Itoa(int(pid)))
 			f.Close()
+			go svr.signalHandler()
 		}
-		go svr.signalHandler()
+
 	}
 	if err != nil {
 		return err
