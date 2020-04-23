@@ -68,9 +68,13 @@ func (hs *mainServer) OnClosed(c gnet.Conn, err error) (action gnet.Action) {
 	case *server.Httpserver:
 		server.Httppool.Put(svr)
 	case *server.Http2server:
-		hs.pool.Submit(func() {
+		if err == gnet.ErrServerShutdown {
 			svr.Close()
-		})
+		} else {
+			svr.ReadPool.Submit(func() {
+				svr.Close()
+			})
+		}
 	}
 	c.SetContext(nil)
 	return

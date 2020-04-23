@@ -222,6 +222,9 @@ func (req *Request) Parsereq(data []byte) (n int, out []byte, err error) {
 
 				for ; s < l; s += 2 {
 					i = bytes.Index(data[s:], []byte{13, 10})
+					if i == -1 {
+						return 0, nil, nil
+					}
 					b := make([]byte, 8)
 					if i&1 == 0 {
 						hex.Decode(b[8-i/2:], data[s:s+i])

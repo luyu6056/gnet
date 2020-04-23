@@ -79,6 +79,7 @@ func NewH2Conn(c gnet.Conn) *Http2server {
 	h2s.Setting.MAX_HEADER_LIST_SIZE = 0
 	h2s.Streams[0].OUT_WINDOW_SIZE = http2initialWindowSize
 	h2s.Streams[0].IN_WINDOW_SIZE = http2serverWindowSize
+	h2s.Streams[0].Out.Reset()
 	h2s.SendPool.Tune(http2MaxConcurrentStreams)
 	h2s.SendPool.Reboot()
 	h2s.c = c
