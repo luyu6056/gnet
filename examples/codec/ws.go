@@ -24,8 +24,8 @@ const (
 	TextMessage = 1
 
 	// BinaryMessage denotes a binary data message.
-	BinaryMessage         = 2
-	BinaryMessagefinalBit = BinaryMessage | finalBit
+	BinaryMessage = 2
+
 	// CloseMessage denotes a close control message. The optional message
 	// payload contains a numeric code and text. Use the FormatCloseMessage
 	// function to format a close message payload.
@@ -56,8 +56,10 @@ const (
 	defaultReadBufferSize  = 4096
 	defaultWriteBufferSize = 8192
 
-	continuationFrame = 0
-	noFrame           = -1
+	continuationFrame         = 0
+	continuationFramefinalBit = continuationFrame | finalBit
+	BinaryMessagefinalBit     = BinaryMessage | finalBit
+	noFrame                   = -1
 )
 
 // Close codes defined in RFC 6455, section 11.7.
@@ -415,10 +417,11 @@ func (c *WSconn) Output_data(msg *buf.MsgBuffer) { //专用的server输出
 	if mw.compress {
 		mw.outbuf[0] |= rsv1Bit
 	}
-	for length := msg.Len(); length > 0; length, mw.outbuf[0] = length-defaultWriteBufferSize, continuationFrame {
-		msglen := length
+	for msglen := msg.Len(); msglen > 0; msglen, mw.outbuf[0] = msg.Len(), continuationFramefinalBit {
+
 		if msglen > defaultWriteBufferSize {
 			msglen = defaultWriteBufferSize //当前帧长度，不大于帧大小
+			mw.outbuf[0] -= mw.outbuf[0] & finalBit
 		}
 
 		switch {
@@ -444,9 +447,7 @@ func (c *WSconn) Output_data(msg *buf.MsgBuffer) { //专用的server输出
 			mw.outbuf[1] = byte(msglen)
 			copy(mw.outbuf[2:], msg.Next(msglen))
 		}
-		if length > defaultWriteBufferSize {
-			mw.outbuf[0] &= finalBit
-		}
+
 		c.Write(mw.outbuf[:msglen+msgheader])
 	}
 	write_pool.Put(mw)
@@ -476,11 +477,12 @@ func (c *WSconn) WriteMessage(messageType int, data []byte) error { //通用的�
 	if mw.compress {
 		mw.outbuf[0] |= rsv1Bit
 	}
-	for length := mw.writeBuf.Len(); length > 0; length, mw.outbuf[0] = length-defaultWriteBufferSize, continuationFrame {
+	for l := mw.writeBuf.Len(); l > 0; l, mw.outbuf[0] = mw.writeBuf.Len(), continuationFramefinalBit {
 		// Check for invalid control frames.
-		l := length
+
 		if l > defaultWriteBufferSize {
 			l = defaultWriteBufferSize //当前帧长度，不大于帧大小
+			mw.outbuf[0] -= mw.outbuf[0] & finalBit
 		}
 
 		msglen := msgheader
@@ -506,10 +508,6 @@ func (c *WSconn) WriteMessage(messageType int, data []byte) error { //通用的�
 		default:
 			mw.outbuf[1] = byte(l)
 		}
-		if length <= defaultWriteBufferSize { //长度小于分帧大小，就结束
-			mw.outbuf[0] |= finalBit
-		}
-
 		if !c.IsServer {
 			msglen += 4
 			copy(mw.outbuf[msglen:], mw.writeBuf.Next(l))
