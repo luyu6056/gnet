@@ -159,7 +159,7 @@ func (hs *Httpserver) Upgradews(c gnet.Conn) (err error) {
 }
 
 func (req *Request) Parsereq(data []byte) (n int, out []byte, err error) {
-	sdata := *(*string)(unsafe.Pointer(&data))
+	sdata := string(data)
 
 	var i, s int
 	for k := range req.Header {
