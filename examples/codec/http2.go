@@ -15,7 +15,7 @@ import (
 
 	"github.com/klauspost/compress/gzip"
 	"github.com/luyu6056/gnet"
-	"github.com/luyu6056/gnet/buf"
+	"github.com/luyu6056/gnet/tls"
 	"github.com/panjf2000/ants/v2"
 	"golang.org/x/net/http2/hpack"
 )
@@ -42,18 +42,18 @@ type Http2server struct {
 	lock sync.Mutex
 }
 type Http2stream struct {
-	Out                             *buf.MsgBuffer
+	Out                             *tls.MsgBuffer
 	Headers                         []hpack.HeaderField
-	In                              *buf.MsgBuffer
+	In                              *tls.MsgBuffer
 	Id                              uint32
 	IN_WINDOW_SIZE, OUT_WINDOW_SIZE int32
 	sendch                          chan int8
 	svr                             *Http2server
 	close                           int8
 	henc                            *hpack.Encoder
-	headerbuf                       buf.MsgBuffer
+	headerbuf                       tls.MsgBuffer
 	data                            *bytes.Reader
-	compressbuf                     *buf.MsgBuffer
+	compressbuf                     *tls.MsgBuffer
 }
 
 const (
@@ -234,7 +234,7 @@ var Http2pool = sync.Pool{New: func() interface{} {
 	hs.ReadPool, _ = ants.NewPool(http2MaxConcurrentStreams)
 	hs.SendPool, _ = ants.NewPoolWithFunc(http2MaxConcurrentStreams, sendpool_static)
 	hs.Streams = make([]*Http2stream, http2MaxConcurrentStreams)
-	hs.Streams[0] = &Http2stream{sendch: make(chan int8), Out: &buf.MsgBuffer{}}
+	hs.Streams[0] = &Http2stream{sendch: make(chan int8), Out: &tls.MsgBuffer{}}
 	hs.ReadMetaHeaders = hpack.NewDecoder(http2initialHeaderTableSize, nil)
 	hs.Streams[0].svr = hs
 	//hs.Request.Header = make(map[string]string)
@@ -268,10 +268,10 @@ func (h2s *Http2server) connError(code http2ErrCode) error {
 }
 
 var stream_pool = sync.Pool{New: func() interface{} {
-	hs := &Http2stream{Out: &buf.MsgBuffer{}, In: buf.NewBuffer(0)}
+	hs := &Http2stream{Out: &tls.MsgBuffer{}, In: tls.NewBuffer(0)}
 	hs.sendch = make(chan int8)
 	hs.data = &bytes.Reader{}
-	hs.compressbuf = &buf.MsgBuffer{}
+	hs.compressbuf = &tls.MsgBuffer{}
 	return hs
 }}
 

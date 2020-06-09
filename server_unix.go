@@ -21,7 +21,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/luyu6056/gnet/buf"
 	"github.com/luyu6056/gnet/internal/netpoll"
 	"github.com/luyu6056/gnet/tls"
 	"golang.org/x/sys/unix"
@@ -417,7 +416,7 @@ func (svr *server) signalHandler() {
 
 type out struct {
 	c          *conn
-	b          buf.MsgBuffer
+	b          tls.MsgBuffer
 	outbufchan chan *out
 	lazyChan   chan *conn
 }

@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/luyu6056/gnet/buf"
 	"github.com/luyu6056/gnet/internal/netpoll"
 	"github.com/luyu6056/gnet/tls"
 	"golang.org/x/sys/unix"
@@ -27,7 +26,7 @@ const (
 )
 
 var msgbufpool = sync.Pool{New: func() interface{} {
-	return &buf.MsgBuffer{}
+	return &tls.MsgBuffer{}
 }}
 
 type conn struct {
@@ -39,8 +38,8 @@ type conn struct {
 	opened             int32          // connection opened event fired
 	localAddr          net.Addr       // local addr
 	remoteAddr         net.Addr       // remote addr
-	inboundBuffer      *buf.MsgBuffer // buffer for data from client
-	outboundBuffer     *buf.MsgBuffer
+	inboundBuffer      *tls.MsgBuffer // buffer for data from client
+	outboundBuffer     *tls.MsgBuffer
 	tlsconn            *tls.Conn
 	inboundBufferWrite func([]byte) (int, error)
 	readframe          func() []byte
@@ -53,8 +52,8 @@ func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
 		sa:             sa,
 		loop:           lp,
 		codec:          lp.codec,
-		inboundBuffer:  msgbufpool.Get().(*buf.MsgBuffer),
-		outboundBuffer: msgbufpool.Get().(*buf.MsgBuffer),
+		inboundBuffer:  msgbufpool.Get().(*tls.MsgBuffer),
+		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
 	}
 	c.inboundBufferWrite = c.inboundBuffer.Write
 	c.readframe = c.read

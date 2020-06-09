@@ -1,4 +1,4 @@
-package buf
+package tls
 
 import (
 	"io"

@@ -15,17 +15,16 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/klauspost/compress/gzip"
 	"github.com/luyu6056/gnet"
-	"github.com/luyu6056/gnet/buf"
+	"github.com/luyu6056/gnet/tls"
 )
 
 type Httpserver struct {
 	Request Request
 	c       gnet.Conn
-	Out     *buf.MsgBuffer
+	Out     *tls.MsgBuffer
 	Ws      *WSconn
 	data    *bytes.Reader
 }
@@ -39,14 +38,14 @@ type Request struct {
 }
 
 var Httppool = sync.Pool{New: func() interface{} {
-	hs := &Httpserver{Out: new(buf.MsgBuffer)}
+	hs := &Httpserver{Out: new(tls.MsgBuffer)}
 	hs.Request.Header = make(map[string]string)
 	hs.data = &bytes.Reader{}
 	return hs
 }}
 
 var msgbufpool = sync.Pool{New: func() interface{} {
-	return new(buf.MsgBuffer)
+	return new(tls.MsgBuffer)
 }}
 var gzippool = sync.Pool{New: func() interface{} {
 	w, _ := gzip.NewWriterLevel(nil, 6)
@@ -143,7 +142,7 @@ func (hs *Httpserver) Upgradews(c gnet.Conn) (err error) {
 		Http:       hs,
 		Write:      c.AsyncWrite,
 		IsCompress: strings.Contains(hs.Request.Header["Sec-WebSocket-Extensions"], "permessage-deflate"),
-		readbuf:    &buf.MsgBuffer{},
+		readbuf:    &tls.MsgBuffer{},
 	}
 
 	c.SetContext(hs.Ws)
@@ -418,7 +417,7 @@ func (hs *Httpserver) Static() {
 				if len(b) > 512 && (isgzip || isdeflate) {
 					switch {
 					case isdeflate:
-						buf := msgbufpool.Get().(*buf.MsgBuffer)
+						buf := msgbufpool.Get().(*tls.MsgBuffer)
 						defer msgbufpool.Put(buf)
 						buf.Reset()
 						w := CompressNoContextTakeover(buf, 6)
@@ -431,7 +430,7 @@ func (hs *Httpserver) Static() {
 						msglen = buf.Len()
 					case isgzip:
 						g := gzippool.Get().(*gzip.Writer)
-						buf := msgbufpool.Get().(*buf.MsgBuffer)
+						buf := msgbufpool.Get().(*tls.MsgBuffer)
 						defer msgbufpool.Put(buf)
 						buf.Reset()
 						g.Reset(buf)

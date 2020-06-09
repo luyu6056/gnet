@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/luyu6056/gnet/buf"
+	"github.com/luyu6056/gnet/tls"
 )
 
 type eventloop struct {
@@ -211,7 +211,7 @@ func (el *eventloop) loopReadUDP(c *stdConn) error {
 
 type out struct {
 	c *stdConn
-	b buf.MsgBuffer
+	b tls.MsgBuffer
 }
 
 func (el *eventloop) loopOut(bufnum int) {

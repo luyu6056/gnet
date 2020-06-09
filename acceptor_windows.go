@@ -10,7 +10,7 @@ package gnet
 import (
 	"time"
 
-	"github.com/luyu6056/gnet/buf"
+	"github.com/luyu6056/gnet/tls"
 )
 
 func (svr *server) listenerRun() {
@@ -54,7 +54,7 @@ func (svr *server) listenerRun() {
 						return
 					}
 
-					msg := msgbufpool.Get().(*buf.MsgBuffer)
+					msg := msgbufpool.Get().(*tls.MsgBuffer)
 					msg.Write(packet[:n])
 					el.ch <- &tcpIn{c, msg}
 				}

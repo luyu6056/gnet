@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/luyu6056/gnet/buf"
+	"github.com/luyu6056/gnet/tls"
 )
 
 // The message types are defined in RFC 6455, section 11.8.
@@ -101,13 +101,13 @@ type WSconn struct {
 	readDecompress bool
 	IsServer       bool
 	Write          func([]byte) error
-	readbuf        *buf.MsgBuffer //读取分帧和解压用
+	readbuf        *tls.MsgBuffer //读取分帧和解压用
 	messageType    int
 	fps            uint32
 }
 
 var buf_pool = sync.Pool{New: func() interface{} {
-	return new(buf.MsgBuffer)
+	return new(tls.MsgBuffer)
 }}
 
 func (c *WSconn) ReadMessage(in []byte) (frameType int, result []byte, err error) {
@@ -401,7 +401,7 @@ func newMaskKey() [4]byte {
 	return [4]byte{byte(n), byte(n >> 8), byte(n >> 16), byte(n >> 24)}
 }
 
-func (c *WSconn) Output_data(msg *buf.MsgBuffer) { //专用的server输出
+func (c *WSconn) Output_data(msg *tls.MsgBuffer) { //专用的server输出
 
 	mw := write_pool.Get().(*messageWriter)
 	mw.compress = false
@@ -531,12 +531,12 @@ func (c *WSconn) WriteMessage(messageType int, data []byte) error { //通用的�
 }
 
 var write_pool = sync.Pool{New: func() interface{} {
-	return &messageWriter{writeBuf: &buf.MsgBuffer{}, outbuf: make([]byte, defaultWriteBufferSize+msgheader+msglength8+msgmask)}
+	return &messageWriter{writeBuf: &tls.MsgBuffer{}, outbuf: make([]byte, defaultWriteBufferSize+msgheader+msglength8+msgmask)}
 }}
 
 type messageWriter struct {
 	compress bool           // whether next call to flushFrame should set RSV1
-	writeBuf *buf.MsgBuffer //:
+	writeBuf *tls.MsgBuffer //:
 	outbuf   []byte
 }
 

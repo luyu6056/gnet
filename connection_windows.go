@@ -11,12 +11,11 @@ import (
 	"net"
 	"sync"
 
-	"github.com/luyu6056/gnet/buf"
 	"github.com/luyu6056/gnet/tls"
 )
 
 var msgbufpool = sync.Pool{New: func() interface{} {
-	return &buf.MsgBuffer{}
+	return &tls.MsgBuffer{}
 }}
 
 type stderr struct {
@@ -30,7 +29,7 @@ type wakeReq struct {
 
 type tcpIn struct {
 	c   *stdConn
-	buf *buf.MsgBuffer
+	buf *tls.MsgBuffer
 }
 
 type udpIn struct {
@@ -45,7 +44,7 @@ type stdConn struct {
 	codec                         ICodec         // codec for TCP
 	localAddr                     net.Addr       // local server addr
 	remoteAddr                    net.Addr       // remote peer addr
-	inboundBuffer, outboundBuffer *buf.MsgBuffer // buffer for data from client
+	inboundBuffer, outboundBuffer *tls.MsgBuffer // buffer for data from client
 	tlsconn                       *tls.Conn
 	inboundBufferWrite            func([]byte) (int, error)
 	readframe                     func() []byte
@@ -56,8 +55,8 @@ func newTCPConn(conn net.Conn, lp *eventloop) *stdConn {
 		conn:           conn,
 		loop:           lp,
 		codec:          lp.codec,
-		inboundBuffer:  msgbufpool.Get().(*buf.MsgBuffer),
-		outboundBuffer: msgbufpool.Get().(*buf.MsgBuffer),
+		inboundBuffer:  msgbufpool.Get().(*tls.MsgBuffer),
+		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
 	}
 	c.inboundBufferWrite = c.inboundBuffer.Write
 	c.readframe = c.read
@@ -80,7 +79,7 @@ func newUDPConn(lp *eventloop, localAddr, remoteAddr net.Addr) *stdConn {
 		loop:          lp,
 		localAddr:     localAddr,
 		remoteAddr:    remoteAddr,
-		inboundBuffer: msgbufpool.Get().(*buf.MsgBuffer),
+		inboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
 	}
 }
 

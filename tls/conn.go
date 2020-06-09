@@ -15,8 +15,6 @@ import (
 	"io"
 	"net"
 	"sync"
-
-	"github.com/luyu6056/gnet/buf"
 )
 
 // A Conn represents a secured connection.
@@ -83,12 +81,12 @@ type Conn struct {
 
 	// input/output
 	in, out   halfConn
-	rawInput  buf.MsgBuffer  // raw input, starting with a record header
-	input     *buf.MsgBuffer // 指针指向gnet.conn的inboundBuffer
-	hand      buf.MsgBuffer  // handshake data waiting to be read
-	outBuf    []byte         // scratch buffer used by out.encrypt
-	buffering bool           // whether records are buffered in sendBuf
-	sendBuf   *buf.MsgBuffer // a buffer of records waiting to be sent
+	rawInput  MsgBuffer  // raw input, starting with a record header
+	input     *MsgBuffer // 指针指向gnet.conn的inboundBuffer
+	hand      MsgBuffer  // handshake data waiting to be read
+	outBuf    []byte     // scratch buffer used by out.encrypt
+	buffering bool       // whether records are buffered in sendBuf
+	sendBuf   *MsgBuffer // a buffer of records waiting to be sent
 
 	// bytesSent counts the bytes of application data sent.
 	// packetsSent counts packets.
