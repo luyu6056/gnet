@@ -6,41 +6,11 @@
 
 package gnet
 
-import "github.com/luyu6056/gnet/internal/netpoll"
-
-func (lp *loop) handleEvent(fd int, filter int16) error {
-	if c, ok := lp.connections[fd]; ok {
-		//switch filter {
-		//// Don't change the ordering of processing EVFILT_WRITE | EVFILT_READ | EV_ERROR/EV_EOF unless you're 100%
-		//// sure what you're doing!
-		//// Re-ordering can easily introduce bugs and bad side-effects, as I found out painfully in the past.
-		//case netpoll.EVFilterWrite:
-		//	if !c.outboundBuffer.IsEmpty() {
-		//		return lp.loopOut(c)
-		//	}
-		//	return nil
-		//case netpoll.EVFilterRead:
-		//	return lp.loopIn(c)
-		//case netpoll.EVFilterSock:
-		//	return lp.loopCloseConn(c, nil)
-		//default:
-		//	return nil
-		//}
-
-		switch c.outboundBuffer.IsEmpty() {
-		// Don't change the ordering of processing EVFILT_WRITE | EVFILT_READ | EV_ERROR/EV_EOF unless you're 100%
-		// sure what you're doing!
-		// Re-ordering can easily introduce bugs and bad side-effects, as I found out painfully in the past.
-		case false:
-			if filter == netpoll.EVFilterWrite {
-				return lp.loopOut(c)
-			}
-			return nil
-		case true:
-			if filter == netpoll.EVFilterRead {
-				return lp.loopIn(c)
-			}
-			return nil
+func (lp *eventloop) handleEvent(fd int, filter int16) error {
+	index := fd / lp.svr.subLoopGroup.len()
+	if index < len(lp.connections) {
+		if c := lp.connections[index]; c != nil && c.opened == connStateOk {
+			return lp.loopIn(c)
 		}
 	}
 	return lp.loopAccept(fd)
