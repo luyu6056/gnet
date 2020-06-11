@@ -14,10 +14,6 @@ import (
 	"github.com/luyu6056/gnet/tls"
 )
 
-var msgbufpool = sync.Pool{New: func() interface{} {
-	return &tls.MsgBuffer{}
-}}
-
 type stderr struct {
 	c   *stdConn
 	err error
@@ -49,6 +45,10 @@ type stdConn struct {
 	inboundBufferWrite            func([]byte) (int, error)
 	readframe                     func() []byte
 }
+
+var msgbufpool = sync.Pool{New: func() interface{} {
+	return &tls.MsgBuffer{}
+}}
 
 func newTCPConn(conn net.Conn, lp *eventloop) *stdConn {
 	c := &stdConn{
