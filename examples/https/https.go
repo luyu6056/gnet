@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/luyu6056/gnet"
-	server "github.com/luyu6056/gnet/examples/codec"
+	"github.com/luyu6056/gnet/examples/codec"
 	"github.com/luyu6056/gnet/tls"
 	"github.com/panjf2000/ants/v2"
 )
@@ -28,9 +28,9 @@ func main() {
 		log.Fatalf("tls.LoadX509KeyPair err: %v", err)
 	}
 	http := &mainServer{addr: "tcp://:8080", pool: gopool}
-	go gnet.Serve(http, http.addr, gnet.WithLoopNum(runtime.NumCPU()), gnet.WithReusePort(false), gnet.WithTCPKeepAlive(time.Second*600), gnet.WithCodec(&server.Tlscodec{}), gnet.WithOutbuf(1024), gnet.WithMultiOut(true))
+	go gnet.Serve(http, http.addr, gnet.WithLoopNum(runtime.NumCPU()), gnet.WithReusePort(false), gnet.WithTCPKeepAlive(time.Second*600), gnet.WithCodec(&codec.Tlscodec{}), gnet.WithOutbuf(1024), gnet.WithMultiOut(true))
 	h443 := &mainServer{addr: "tcp://:443", pool: gopool}
-	log.Fatal(gnet.Serve(h443, h443.addr, gnet.WithLoopNum(runtime.NumCPU()), gnet.WithReusePort(false), gnet.WithTCPKeepAlive(time.Second*600), gnet.WithCodec(&server.Tlscodec{}), gnet.WithOutbuf(1024), gnet.WithMultiOut(true), gnet.WithTls(&tls.Config{
+	log.Fatal(gnet.Serve(h443, h443.addr, gnet.WithLoopNum(runtime.NumCPU()), gnet.WithReusePort(false), gnet.WithTCPKeepAlive(time.Second*600), gnet.WithCodec(&codec.Tlscodec{}), gnet.WithOutbuf(1024), gnet.WithMultiOut(true), gnet.WithTls(&tls.Config{
 		Certificates:             []tls.Certificate{cert},
 		NextProtos:               []string{"h2", "http/1.1"},
 		PreferServerCipherSuites: true,
@@ -65,9 +65,9 @@ func (hs *mainServer) OnOpened(c gnet.Conn) (out []byte, action gnet.Action) {
 func (hs *mainServer) OnClosed(c gnet.Conn, err error) (action gnet.Action) {
 	switch svr := c.Context().(type) {
 
-	case *server.Httpserver:
-		server.Httppool.Put(svr)
-	case *server.Http2server:
+	case *codec.Httpserver:
+		codec.Httppool.Put(svr)
+	case *codec.Http2server:
 		if err == gnet.ErrServerShutdown {
 			svr.Close()
 		} else {
@@ -82,7 +82,7 @@ func (hs *mainServer) OnClosed(c gnet.Conn, err error) (action gnet.Action) {
 
 func (hs *mainServer) React(data []byte, c gnet.Conn) (action gnet.Action) {
 	switch svr := c.Context().(type) {
-	case *server.Httpserver:
+	case *codec.Httpserver:
 		switch svr.Request.Path {
 		case "/hello":
 			svr.Output_data([]byte("hello word!"))
@@ -98,7 +98,7 @@ func (hs *mainServer) React(data []byte, c gnet.Conn) (action gnet.Action) {
 				action = gnet.Close
 				return
 			}
-			server.Httppool.Put(svr)
+			codec.Httppool.Put(svr)
 			return gnet.None
 		default:
 			svr.Static()
@@ -106,9 +106,9 @@ func (hs *mainServer) React(data []byte, c gnet.Conn) (action gnet.Action) {
 		if svr.Request.Connection == "close" {
 			action = gnet.Close
 		}
-	case *server.WSconn:
-		svr.WriteMessage(server.TextMessage, []byte("hello word!"))
-	case *server.Http2server:
+	case *codec.WSconn:
+		svr.WriteMessage(codec.TextMessage, []byte("hello word!"))
+	case *codec.Http2server:
 		svr.SendPool.Invoke(svr.WorkStream) //h2是异步，可能会Jitter抖动厉害
 	}
 	return

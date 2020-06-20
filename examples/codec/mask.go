@@ -4,7 +4,7 @@
 
 // +build !appengine
 
-package server
+package codec
 
 import "unsafe"
 
