@@ -10,7 +10,7 @@ package gnet
 import (
 	"time"
 
-	"github.com/luyu6056/gnet/tls"
+	"github.com/luyu6056/tls"
 )
 
 func (svr *server) listenerRun() {

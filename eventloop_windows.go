@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/luyu6056/gnet/tls"
+	"github.com/luyu6056/tls"
 )
 
 type eventloop struct {

@@ -11,7 +11,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/luyu6056/gnet/tls"
+	"github.com/luyu6056/tls"
 )
 
 type stderr struct {

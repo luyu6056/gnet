@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/luyu6056/gnet/tls"
+	"github.com/luyu6056/tls"
 )
 
 // commandBufferSize represents the buffer size of event-loop command channel on Windows.

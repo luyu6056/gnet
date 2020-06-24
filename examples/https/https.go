@@ -9,7 +9,7 @@ import (
 
 	"github.com/luyu6056/gnet"
 	"github.com/luyu6056/gnet/examples/codec"
-	"github.com/luyu6056/gnet/tls"
+	"github.com/luyu6056/tls"
 	"github.com/panjf2000/ants/v2"
 )
 

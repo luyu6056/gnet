@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/luyu6056/gnet/internal/netpoll"
-	"github.com/luyu6056/gnet/tls"
+	"github.com/luyu6056/tls"
 	"golang.org/x/sys/unix"
 )
 

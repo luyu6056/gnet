@@ -7,7 +7,7 @@ package gnet
 import (
 	"time"
 
-	"github.com/luyu6056/gnet/tls"
+	"github.com/luyu6056/tls"
 )
 
 // Option is a function that will set up option.

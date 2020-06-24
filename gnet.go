@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/luyu6056/gnet/tls"
+	"github.com/luyu6056/tls"
 )
 
 // Action is an action that occurs after the completion of an event.
