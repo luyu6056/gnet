@@ -33,7 +33,11 @@ func (el *eventloop) loopRun() {
 		if el.idx == 0 && el.svr.opts.Ticker {
 			close(el.svr.ticktock)
 		}
-		el.svr.signalShutdown(err)
+		select {
+		case el.svr.close <- err:
+		default:
+		}
+
 		el.svr.loopWG.Done()
 		el.loopEgress()
 		el.svr.loopWG.Done()
@@ -155,21 +159,23 @@ func (el *eventloop) loopTicker() {
 }
 
 func (el *eventloop) loopError(c *stdConn, err error) (e error) {
-	if e = c.conn.Close(); e == nil {
+	if _, ok := el.connections[c]; ok {
 		delete(el.connections, c)
-		switch atomic.LoadInt32(&c.done) {
-		case 0: // read error
-			if err != io.EOF {
-				//log.Printf("socket: %s with err: %v\n", c.remoteAddr.String(), err)
+		if e = c.conn.Close(); e == nil {
+			switch atomic.LoadInt32(&c.done) {
+			case 0: // read error
+				if err != io.EOF {
+					//log.Printf("socket: %s with err: %v\n", c.remoteAddr.String(), err)
+				}
+			case 1: // closed
+				//log.Printf("socket: %s has been closed by client\n", c.remoteAddr.String())
 			}
-		case 1: // closed
-			//log.Printf("socket: %s has been closed by client\n", c.remoteAddr.String())
+			switch el.eventHandler.OnClosed(c, err) {
+			case Shutdown:
+				return errClosing
+			}
+			c.releaseTCP()
 		}
-		switch el.eventHandler.OnClosed(c, err) {
-		case Shutdown:
-			return errClosing
-		}
-		c.releaseTCP()
 	}
 	return
 }

@@ -49,6 +49,9 @@ type Server struct {
 
 	// TCPKeepAlive (SO_KEEPALIVE) socket option.
 	TCPKeepAlive time.Duration
+
+	// Close the server 在OnInitComplete会把server传递下去，建议在OnInitComplete里面把Server赋值到你的server结构体里，以调用关闭gnet的Close方法
+	Close func()
 }
 
 // Conn is a interface of gnet connection.
@@ -102,6 +105,8 @@ type Conn interface {
 	//Data() []byte
 
 	UpgradeTls(config *tls.Config) error
+
+	WriteNoCodec(buf []byte)
 }
 
 type (

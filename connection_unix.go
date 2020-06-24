@@ -183,7 +183,7 @@ func (c *conn) Write(buf []byte) (n int, err error) {
 
 func (c *conn) AsyncWrite(buf []byte) error {
 	encodedBuf, err := c.codec.Encode(c, buf)
-	if encodedBuf != nil {
+	if len(encodedBuf) > 0 {
 		o := <-c.loop.outbufchan
 		o.c = c
 		o.b.Write(buf)
@@ -196,7 +196,12 @@ func (c *conn) AsyncWrite(buf []byte) error {
 	}
 	return err
 }
-
+func (c *conn) WriteNoCodec(buf []byte) {
+	o := <-c.loop.outbufchan
+	o.c = c
+	o.b.Write(buf)
+	c.loop.outChan <- o
+}
 func (c *conn) SendTo(buf []byte) error {
 	return unix.Sendto(c.fd, buf, 0, c.sa)
 }

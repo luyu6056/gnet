@@ -104,6 +104,7 @@ type WSconn struct {
 	readbuf        *tls.MsgBuffer //读取分帧和解压用
 	messageType    int
 	fps            uint32
+	Ctx            interface{}
 }
 
 var buf_pool = sync.Pool{New: func() interface{} {

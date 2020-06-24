@@ -43,6 +43,7 @@ type server struct {
 	outbufchan, outChan chan *out
 	lazyChan            chan *conn
 	outclose            chan bool
+	close               chan bool
 }
 
 // waitForShutdown waits for a signal to shutdown
@@ -312,6 +313,7 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 	if numCPU <= 0 {
 		numCPU = runtime.NumCPU()
 	}
+	svr.close = make(chan bool, 1)
 
 	svr.opts = options
 	svr.tlsconfig = options.Tlsconfig
@@ -334,6 +336,9 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 		NumEventLoop: numCPU,
 		ReUsePort:    options.ReusePort,
 		TCPKeepAlive: options.TCPKeepAlive,
+		Close: func() {
+			svr.close <- true
+		},
 	}
 	if svr.opts.ReusePort {
 		err := unix.SetsockoptInt(svr.ln.fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
@@ -368,47 +373,52 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 func (svr *server) signalHandler() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
+	select {
+	case sig := <-ch:
+		signal.Stop(ch)
+		var wg, wg1 sync.WaitGroup
+		wg.Add(svr.subLoopGroup.len())
+		wg1.Add(1)
+		svr.subLoopGroup.iterate(func(i int, lp *eventloop) bool {
+			sniffError(lp.poller.Trigger(func() error {
 
-	sig := <-ch
-	signal.Stop(ch)
-	var wg, wg1 sync.WaitGroup
-	wg.Add(svr.subLoopGroup.len())
-	wg1.Add(1)
-	svr.subLoopGroup.iterate(func(i int, lp *eventloop) bool {
-		sniffError(lp.poller.Trigger(func() error {
+				wg.Done()
+				wg1.Wait()
+				return nil
+			}))
+			return true
+		})
+		wg.Wait()
+		svr.ln.fd = 0 // 修改监听fd让accept失效
+		wg1.Done()
+		// timeout context for shutdown
+		switch sig {
+		case syscall.SIGINT, syscall.SIGTERM:
+			// stop
+			log.Println("signal: stop")
+			svr.signalShutdown()
+			return
+		case syscall.SIGUSR1:
+			// reload
+			log.Println("signal: reload")
+			f, err := svr.ln.ln.(*net.TCPListener).File()
+			var args []string
+			if err == nil {
+				args = []string{"-graceful"}
+			}
+			cmd := exec.Command(os.Args[0], args...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			// put socket FD at the first entry
+			cmd.ExtraFiles = []*os.File{f}
+			cmd.Start()
+			svr.signalShutdown()
 
-			wg.Done()
-			wg1.Wait()
-			return nil
-		}))
-		return true
-	})
-	wg.Wait()
-	svr.ln.fd = 0 // 修改监听fd让accept失效
-	wg1.Done()
-	// timeout context for shutdown
-	switch sig {
-	case syscall.SIGINT, syscall.SIGTERM:
-		// stop
-		log.Println("signal: stop")
-		svr.signalShutdown()
-		return
-	case syscall.SIGUSR1:
-		// reload
-		log.Println("signal: reload")
-		f, err := svr.ln.ln.(*net.TCPListener).File()
-		var args []string
-		if err == nil {
-			args = []string{"-graceful"}
+			return
 		}
-		cmd := exec.Command(os.Args[0], args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		// put socket FD at the first entry
-		cmd.ExtraFiles = []*os.File{f}
-		cmd.Start()
+	case <-svr.close:
+		log.Println("close gnet")
 		svr.signalShutdown()
-
 		return
 	}
 

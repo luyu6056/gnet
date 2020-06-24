@@ -12,8 +12,10 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/luyu6056/gnet/tls"
@@ -44,6 +46,7 @@ type server struct {
 	subLoopGroup     IEventLoopGroup    // loops for handling events
 	subLoopGroupSize int                // number of loops
 	tlsconfig        *tls.Config
+	close            chan error
 }
 
 // waitForShutdown waits for a signal to shutdown.
@@ -102,23 +105,6 @@ func (svr *server) stop() {
 	svr.ln.close()
 	svr.listenerWG.Wait()
 
-	// Notify all loops to close.
-	svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
-		el.ch <- errClosing
-		el.outclose <- true
-		return true
-	})
-
-	// Wait on all loops to close.
-	svr.loopWG.Wait()
-
-	// Close all connections.
-	svr.loopWG.Add(svr.subLoopGroupSize)
-	svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
-		el.ch <- errCloseConns
-		return true
-	})
-	svr.loopWG.Wait()
 	return
 }
 
@@ -154,6 +140,7 @@ func serve(eventHandler EventHandler, addr string, options *Options) (err error)
 	}
 
 	svr := new(server)
+	svr.close = make(chan error, numCPU+1)
 	svr.opts = options
 	svr.tlsconfig = options.Tlsconfig
 	svr.eventHandler = eventHandler
@@ -174,18 +161,59 @@ func serve(eventHandler EventHandler, addr string, options *Options) (err error)
 		NumEventLoop: numCPU,
 		ReUsePort:    options.ReusePort,
 		TCPKeepAlive: options.TCPKeepAlive,
+		Close: func() {
+			svr.close <- errors.New("close by server.Close()")
+		},
 	}
 	switch svr.eventHandler.OnInitComplete(server) {
 	case None:
 	case Shutdown:
 		return
 	}
-
+	go svr.signalHandler()
 	// Start all loops.
 	svr.startLoops(numCPU)
 	// Start listener.
 	svr.startListener()
-	defer svr.stop()
-
+	svr.stop()
 	return
+}
+func (svr *server) signalHandler() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	for {
+		select {
+		case sig := <-ch:
+			signal.Stop(ch)
+			// Notify all loops to close.
+			svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
+				el.ch <- errClosing
+				el.outclose <- true
+				return true
+			})
+
+			// Wait on all loops to close.
+			svr.loopWG.Wait()
+
+			// Close all connections.
+			svr.loopWG.Add(svr.subLoopGroupSize)
+			svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
+				el.ch <- errCloseConns
+				return true
+			})
+			svr.loopWG.Wait()
+			// timeout context for shutdown
+			switch sig {
+			case syscall.SIGINT, syscall.SIGTERM:
+				svr.signalShutdown(nil)
+				return
+
+			}
+		case err := <-svr.close:
+			signal.Stop(ch)
+			svr.signalShutdown(err)
+			return
+		}
+	}
+
 }

@@ -119,7 +119,10 @@ func (c *stdConn) tlsread() (frame []byte) {
 func (c *stdConn) read() []byte {
 	frame, err := c.codec.Decode(c)
 	if err != nil {
-		c.Close()
+		c.loop.ch <- func() error {
+			c.loop.loopError(c, err)
+			return nil
+		}
 		return nil
 	}
 	return frame
@@ -154,25 +157,42 @@ func (c *stdConn) OutBufferLength() int {
 }
 func (c *stdConn) AsyncWrite(buf []byte) error {
 	if encodedBuf, err := c.codec.Encode(c, buf); err == nil {
-		o := <-c.loop.outbufchan
-		o.b.Write(encodedBuf)
-		o.c = c
-		c.loop.outChan <- o
+		if len(encodedBuf) > 0 {
+			o := <-c.loop.outbufchan
+			o.b.Write(encodedBuf)
+			o.c = c
+			c.loop.outChan <- o
+		}
+
 	} else {
-		c.Close()
+		c.loop.ch <- func() error {
+			c.loop.loopError(c, err)
+			return nil
+		}
 	}
 	return nil
 }
 func (c *stdConn) Write(buf []byte) (int, error) {
 	if encodedBuf, err := c.codec.Encode(c, buf); err == nil {
-		o := <-c.loop.outbufchan
-		o.b.Write(encodedBuf)
-		o.c = c
-		c.loop.outChan <- o
+		if len(encodedBuf) > 0 {
+			o := <-c.loop.outbufchan
+			o.b.Write(encodedBuf)
+			o.c = c
+			c.loop.outChan <- o
+		}
 	} else {
-		c.Close()
+		c.loop.ch <- func() error {
+			c.loop.loopError(c, err)
+			return nil
+		}
 	}
 	return len(buf), nil
+}
+func (c *stdConn) WriteNoCodec(buf []byte) {
+	o := <-c.loop.outbufchan
+	o.b.Write(buf)
+	o.c = c
+	c.loop.outChan <- o
 }
 func (c *stdConn) SendTo(buf []byte) (err error) {
 	_, err = c.loop.svr.ln.pconn.WriteTo(buf, c.remoteAddr)
