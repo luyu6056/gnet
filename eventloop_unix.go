@@ -8,7 +8,9 @@
 package gnet
 
 import (
+	"fmt"
 	"net"
+	"runtime/debug"
 	"sync/atomic"
 	"time"
 
@@ -31,6 +33,10 @@ type eventloop struct {
 
 func (lp *eventloop) loopRun() {
 	defer func() {
+		if e := recover(); e != nil {
+			fmt.Println(e)
+			debug.PrintStack()
+		}
 		if lp.idx == 0 && lp.svr.opts.Ticker {
 			close(lp.svr.ticktock)
 		}

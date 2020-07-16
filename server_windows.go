@@ -61,6 +61,7 @@ func (svr *server) waitForShutdown() error {
 // signalShutdown signals a shutdown an begins server closing.
 func (svr *server) signalShutdown(err error) {
 	svr.once.Do(func() {
+
 		svr.cond.L.Lock()
 		svr.serr = err
 		svr.cond.Signal()
@@ -98,6 +99,7 @@ func (svr *server) startLoops(numLoops int) {
 }
 
 func (svr *server) stop() {
+
 	// Wait on a signal for shutdown.
 	log.Printf("server is being shutdown with err: %v\n", svr.waitForShutdown())
 
