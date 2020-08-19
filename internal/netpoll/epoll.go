@@ -9,6 +9,7 @@ package netpoll
 
 import (
 	"log"
+	"os"
 	"unsafe"
 
 	"github.com/luyu6056/gnet/internal"
@@ -24,33 +25,35 @@ type Poller struct {
 }
 
 // OpenPoller instantiates a poller.
-func OpenPoller() (*Poller, error) {
-	poller := new(Poller)
-	epollFD, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
-	if err != nil {
-		return nil, err
+func OpenPoller() (poller *Poller, err error) {
+	poller = new(Poller)
+	if poller.fd, err = unix.EpollCreate1(unix.EPOLL_CLOEXEC); err != nil {
+		poller = nil
+		err = os.NewSyscallError("epoll_create1", err)
+		return
 	}
-	poller.fd = epollFD
-	r0, _, errno := unix.Syscall(unix.SYS_EVENTFD2, unix.O_CLOEXEC, unix.O_NONBLOCK, 0)
-	if errno != 0 {
-		_ = unix.Close(epollFD)
-		return nil, errno
+	if poller.wfd, err = unix.Eventfd(0, unix.EFD_NONBLOCK|unix.EFD_CLOEXEC); err != nil {
+		_ = poller.Close()
+		poller = nil
+		err = os.NewSyscallError("eventfd", err)
+		return
 	}
-	poller.wfd = int(r0)
 	poller.wfdBuf = make([]byte, 8)
 	if err = poller.AddRead(poller.wfd); err != nil {
-		return nil, err
+		_ = poller.Close()
+		poller = nil
+		return
 	}
 	poller.asyncJobQueue = internal.NewAsyncJobQueue()
-	return poller, nil
+	return
 }
 
 // Close closes the poller.
 func (p *Poller) Close() error {
-	if err := unix.Close(p.wfd); err != nil {
+	if err := os.NewSyscallError("close", unix.Close(p.fd)); err != nil {
 		return err
 	}
-	return unix.Close(p.fd)
+	return os.NewSyscallError("close", unix.Close(p.wfd))
 }
 
 // Make the endianness of bytes compatible with more linux OSs under different processor-architectures,
@@ -61,12 +64,11 @@ var (
 )
 
 // Trigger wakes up the poller blocked in waiting for network-events and runs jobs in asyncJobQueue.
-func (p *Poller) Trigger(job internal.Job) error {
+func (p *Poller) Trigger(job internal.Job) (err error) {
 	if p.asyncJobQueue.Push(job) == 1 {
-		_, err := unix.Write(p.wfd, b)
-		return err
+		_, err = unix.Write(p.wfd, b)
 	}
-	return nil
+	return os.NewSyscallError("write", err)
 }
 
 // Polling blocks the current goroutine, waiting for network-events.
@@ -109,30 +111,35 @@ const (
 
 // AddReadWrite registers the given file-descriptor with readable and writable events to the poller.
 func (p *Poller) AddReadWrite(fd int) error {
-	return unix.EpollCtl(p.fd, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Fd: int32(fd), Events: readWriteEvents})
+	return os.NewSyscallError("epoll_ctl add",
+		unix.EpollCtl(p.fd, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Fd: int32(fd), Events: readWriteEvents}))
 }
 
 // AddRead registers the given file-descriptor with readable event to the poller.
 func (p *Poller) AddRead(fd int) error {
-	return unix.EpollCtl(p.fd, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Fd: int32(fd), Events: readEvents})
+	return os.NewSyscallError("epoll_ctl add",
+		unix.EpollCtl(p.fd, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Fd: int32(fd), Events: readEvents}))
 }
 
 // AddWrite registers the given file-descriptor with writable event to the poller.
 func (p *Poller) AddWrite(fd int) error {
-	return unix.EpollCtl(p.fd, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Fd: int32(fd), Events: writeEvents})
+	return os.NewSyscallError("epoll_ctl add",
+		unix.EpollCtl(p.fd, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Fd: int32(fd), Events: writeEvents}))
 }
 
 // ModRead renews the given file-descriptor with readable event in the poller.
 func (p *Poller) ModRead(fd int) error {
-	return unix.EpollCtl(p.fd, unix.EPOLL_CTL_MOD, fd, &unix.EpollEvent{Fd: int32(fd), Events: readEvents})
+	return os.NewSyscallError("epoll_ctl mod",
+		unix.EpollCtl(p.fd, unix.EPOLL_CTL_MOD, fd, &unix.EpollEvent{Fd: int32(fd), Events: readEvents}))
 }
 
 // ModReadWrite renews the given file-descriptor with readable and writable events in the poller.
 func (p *Poller) ModReadWrite(fd int) error {
-	return unix.EpollCtl(p.fd, unix.EPOLL_CTL_MOD, fd, &unix.EpollEvent{Fd: int32(fd), Events: readWriteEvents})
+	return os.NewSyscallError("epoll_ctl mod",
+		unix.EpollCtl(p.fd, unix.EPOLL_CTL_MOD, fd, &unix.EpollEvent{Fd: int32(fd), Events: readWriteEvents}))
 }
 
 // Delete removes the given file-descriptor from the poller.
 func (p *Poller) Delete(fd int) error {
-	return unix.EpollCtl(p.fd, unix.EPOLL_CTL_DEL, fd, nil)
+	return os.NewSyscallError("epoll_ctl del", unix.EpollCtl(p.fd, unix.EPOLL_CTL_DEL, fd, nil))
 }

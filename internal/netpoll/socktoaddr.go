@@ -1,8 +1,24 @@
-// Copyright 2019 Andy Pan. All rights reserved.
-// Use of this source code is governed by an MIT-style
-// license that can be found in the LICENSE file.
+// Copyright (c) 2019 Andy Pan
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
-// +build linux darwin netbsd freebsd openbsd dragonfly
+// +build linux freebsd dragonfly darwin
 
 package netpoll
 
@@ -30,7 +46,7 @@ func SockaddrToTCPOrUnixAddr(sa unix.Sockaddr) net.Addr {
 
 // SockaddrToUDPAddr converts a Sockaddr to a net.UDPAddr
 // Returns nil if conversion fails.
-func SockaddrToUDPAddr(sa unix.Sockaddr) *net.UDPAddr {
+func SockaddrToUDPAddr(sa unix.Sockaddr) net.Addr {
 	switch sa := sa.(type) {
 	case *unix.SockaddrInet4:
 		ip := sockaddrInet4ToIP(sa)
@@ -62,7 +78,7 @@ func sockaddrInet6ToIPAndZone(sa *unix.SockaddrInet6) (net.IP, string) {
 }
 
 // ip6ZoneToString converts an IP6 Zone unix int to a net string
-// returns "" if zone is 0
+// returns "" if zone is 0.
 func ip6ZoneToString(zone int) string {
 	if zone == 0 {
 		return ""
