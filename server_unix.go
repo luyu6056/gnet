@@ -616,6 +616,9 @@ func (o *out) write() {
 }
 func (c *conn) lazywrite() {
 	if c.opened != connStateCloseOk {
+		if c.opened == connStateCloseLazyout && c.tlsconn != nil { //关闭前通知tls关闭
+			c.tlsconn.CloseWrite()
+		}
 		for c.outboundBuffer.Len() > 0 {
 			n, err := unix.Write(c.fd, c.outboundBuffer.Bytes())
 			if n <= 0 || err != nil {
@@ -632,6 +635,7 @@ func (c *conn) lazywrite() {
 		if c.opened == connStateCloseLazyout { //彻底删除close的c
 
 			c.opened = connStateCloseOk
+
 			unix.Close(c.fd)
 			c.loop.poller.Delete(c.fd)
 			c.releaseTCP()

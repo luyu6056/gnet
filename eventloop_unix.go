@@ -136,9 +136,7 @@ func (lp *eventloop) loopIn(c *conn) error {
 func (lp *eventloop) loopCloseConn(c *conn, err error) error {
 	if atomic.CompareAndSwapInt32(&c.opened, connStateCloseReady, connStateCloseLazyout) {
 		c.loop.eventHandler.OnClosed(c, err)
-		if c.tlsconn != nil {
-			c.tlsconn.CloseWrite()
-		}
+
 		c.loop.connections[c.fd/lp.svr.subLoopGroup.len()] = nil
 		lp.lazyChan <- c //进行最后的输出
 	}
