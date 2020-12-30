@@ -64,14 +64,9 @@ func newTCPConn(conn net.Conn, lp *eventloop) *stdConn {
 }
 
 func (c *stdConn) releaseTCP() {
-	c.ctx = nil
-	c.localAddr = nil
-	c.remoteAddr = nil
-	c.inboundBuffer.Reset()
-	c.outboundBuffer.Reset()
-	msgbufpool.Put(c.outboundBuffer)
-	msgbufpool.Put(c.inboundBuffer)
-	c.inboundBuffer = nil
+	o := <-c.loop.outbufchan
+	o.c = c
+	c.loop.outChan <- o //修改至outchan进行回收
 }
 
 func newUDPConn(lp *eventloop, localAddr, remoteAddr net.Addr) *stdConn {

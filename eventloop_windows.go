@@ -241,16 +241,29 @@ func (el *eventloop) loopOut(bufnum int) {
 	go func() { //单个gorutinue 减少unix.EAGAIN cpu消耗
 
 		for {
-
 			select {
 			case o := <-el.outChan:
-				if o.c.tlsconn != nil {
-					o.c.tlsconn.Write(o.b.Bytes())
-					o.c.conn.Write(o.c.outboundBuffer.Bytes())
-					o.c.outboundBuffer.Reset()
-				} else {
-					o.c.conn.Write(o.b.Bytes())
+				if o.c.outboundBuffer != nil {
+					if o.c.tlsconn != nil {
+						o.c.tlsconn.Write(o.b.Bytes())
+						o.c.conn.Write(o.c.outboundBuffer.Bytes())
+						o.c.outboundBuffer.Reset()
+					} else {
+						o.c.conn.Write(o.b.Bytes())
+					}
+					if o.c.done == 1 {
+						o.c.ctx = nil
+						o.c.localAddr = nil
+						o.c.remoteAddr = nil
+						o.c.inboundBuffer.Reset()
+						o.c.outboundBuffer.Reset()
+						msgbufpool.Put(o.c.outboundBuffer)
+						msgbufpool.Put(o.c.inboundBuffer)
+						o.c.inboundBuffer = nil
+						o.c.outboundBuffer = nil
+					}
 				}
+
 				o.b.Reset()
 				el.outbufchan <- o
 			case <-el.outclose:
