@@ -99,7 +99,7 @@ func (el *eventloop) loopRead(ti *tcpIn) (err error) {
 	c.inboundBufferWrite(ti.buf.Bytes())
 	ti.buf.Reset()
 	msgbufpool.Put(ti.buf)
-	for inFrame := c.readframe(); inFrame != nil; inFrame = c.readframe() {
+	for inFrame := c.readframe(); inFrame != nil && c.done == 0; inFrame = c.readframe() {
 		action := el.eventHandler.React(inFrame, c)
 		switch action {
 		case None:
