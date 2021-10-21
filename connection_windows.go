@@ -167,22 +167,16 @@ func (c *stdConn) AsyncWrite(buf []byte) error {
 	}
 	return nil
 }
-func (c *stdConn) Write(buf []byte) (int, error) {
-	if encodedBuf, err := c.codec.Encode(c, buf); err == nil {
-		if len(encodedBuf) > 0 {
-			o := <-c.loop.outbufchan
-			o.b.Write(encodedBuf)
-			o.c = c
-			c.loop.outChan <- o
-		}
-	} else {
-		c.loop.ch <- func() error {
-			c.loop.loopError(c, err)
-			return nil
-		}
-	}
+
+//用于直出不编码的出口，tls调用
+func (c *stdConn) Write(buf []byte) (n int, err error) {
+	o := <-c.loop.outbufchan
+	o.c = c
+	o.b.Write(buf)
+	c.loop.outChan <- o
 	return len(buf), nil
 }
+
 func (c *stdConn) WriteNoCodec(buf []byte) {
 	o := <-c.loop.outbufchan
 	o.b.Write(buf)
