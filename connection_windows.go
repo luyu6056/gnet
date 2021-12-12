@@ -3,6 +3,7 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//go:build windows
 // +build windows
 
 package gnet
@@ -10,8 +11,17 @@ package gnet
 import (
 	"net"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/luyu6056/tls"
+)
+
+const (
+	connStateOk           = 1
+	connStateCloseReady   = -0
+	connStateCloseLazyout = -1
+	connStateCloseOk      = -2
 )
 
 type stderr struct {
@@ -36,7 +46,7 @@ type stdConn struct {
 	ctx                           interface{}    // user-defined context
 	conn                          net.Conn       // original connection
 	loop                          *eventloop     // owner loop
-	done                          int32          // 0: attached, 1: closed
+	state                         int32          // connState
 	codec                         ICodec         // codec for TCP
 	localAddr                     net.Addr       // local server addr
 	remoteAddr                    net.Addr       // remote peer addr
@@ -44,6 +54,8 @@ type stdConn struct {
 	tlsconn                       *tls.Conn
 	inboundBufferWrite            func([]byte) (int, error)
 	readframe                     func() []byte
+	flushWait                     chan int
+	flushWaitNum                  int64
 }
 
 var msgbufpool = sync.Pool{New: func() interface{} {
@@ -57,6 +69,8 @@ func newTCPConn(conn net.Conn, lp *eventloop) *stdConn {
 		codec:          lp.codec,
 		inboundBuffer:  msgbufpool.Get().(*tls.MsgBuffer),
 		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
+		flushWait:      make(chan int),
+		state:          connStateOk,
 	}
 	c.inboundBufferWrite = c.inboundBuffer.Write
 	c.readframe = c.read
@@ -177,11 +191,12 @@ func (c *stdConn) Write(buf []byte) (n int, err error) {
 	return len(buf), nil
 }
 
-func (c *stdConn) WriteNoCodec(buf []byte) {
+func (c *stdConn) WriteNoCodec(buf []byte) error {
 	o := <-c.loop.outbufchan
 	o.b.Write(buf)
 	o.c = c
 	c.loop.outChan <- o
+	return nil
 }
 func (c *stdConn) SendTo(buf []byte) (err error) {
 	_, err = c.loop.svr.ln.pconn.WriteTo(buf, c.remoteAddr)
@@ -198,6 +213,7 @@ func (c *stdConn) Wake() error {
 }
 func (c *stdConn) Close() error {
 	c.loop.ch <- func() error {
+		c.state = connStateCloseReady
 		c.loop.loopClose(c)
 		return nil
 	}
@@ -216,4 +232,28 @@ func (c *stdConn) UpgradeTls(config *tls.Config) (err error) {
 		}
 	}
 	return err
+}
+
+func (c *stdConn) FlushWrite(data []byte, noCodec ...bool) {
+	atomic.AddInt64(&c.flushWaitNum, 1)
+	if len(noCodec) > 0 && noCodec[0] {
+		c.WriteNoCodec(data)
+	} else {
+		c.AsyncWrite(data)
+	}
+out:
+	for c.state == connStateOk {
+		select {
+		case buflen := <-c.flushWait:
+			if buflen == 0 {
+				break out
+			}
+		case <-time.After(time.Millisecond * 10):
+
+			if c.state == connStateOk && (c.outboundBuffer == nil || c.outboundBuffer.Len() == 0) {
+				break out
+			}
+		}
+	}
+	atomic.AddInt64(&c.flushWaitNum, -1)
 }

@@ -77,10 +77,18 @@ func (svr *server) startLoops() {
 func (svr *server) closeLoops() {
 	svr.subLoopGroup.iterate(func(i int, lp *eventloop) bool {
 		sniffError(lp.poller.Trigger(func() error {
+			for _, c := range lp.connections {
+				if c != nil {
+					c.state = connStateCloseReady
+					sniffError(lp.loopCloseConn(c, ErrServerShutdown))
+				}
+
+			}
 			if svr.opts.MultiOut {
 				lp.outclose <- true
 				<-lp.outclose
 			}
+
 			return lp.poller.Close()
 		}))
 		return true
@@ -193,7 +201,7 @@ func (svr *server) stop() {
 		sniffError(lp.poller.Trigger(func() error {
 			for _, c := range lp.connections {
 				if c != nil {
-					c.opened = 0
+					c.state = connStateCloseReady
 					sniffError(lp.loopCloseConn(c, ErrServerShutdown))
 				}
 
@@ -420,226 +428,6 @@ func (svr *server) signalHandler() {
 		log.Println("close gnet")
 		svr.signalShutdown()
 		return
-	}
-
-}
-
-type out struct {
-	c          *conn
-	b          tls.MsgBuffer
-	outbufchan chan *out
-	lazyChan   chan *conn
-}
-
-const (
-	delay          = time.Millisecond
-	sendbufDefault = 16384 + 5 //暂时设置为一个tls包大小吧
-)
-
-func (svr *server) msgOut(bufnum int) {
-	if bufnum == 0 {
-		bufnum = 2048
-	}
-	svr.outbufchan = make(chan *out, bufnum)
-	svr.outChan = make(chan *out, bufnum)
-	svr.lazyChan = make(chan *conn, bufnum) //产生了EAGAIN阻塞的连接
-	svr.outclose = make(chan bool)
-
-	for i := 0; i < cap(svr.outbufchan); i++ {
-		svr.outbufchan <- &out{outbufchan: svr.outbufchan, lazyChan: svr.lazyChan}
-	}
-
-	go func() { //单个gorutinue 减少unix.EAGAIN cpu消耗
-		var c *conn
-		for {
-			c = nil
-			select {
-			case o := <-svr.outChan:
-				o.write()
-			case c = <-svr.lazyChan:
-
-			case <-svr.outclose:
-				//循环至超时退出
-				for {
-					select {
-					case o := <-svr.outChan:
-						o.write()
-					case c := <-svr.lazyChan:
-						svr.lazyChan <- c
-					case <-time.After(time.Second):
-						svr.outclose <- true
-						return
-					}
-					for i := len(svr.outChan); i > 0; i-- {
-						o := <-svr.outChan
-						o.write()
-					}
-					for i := len(svr.lazyChan); i > 0; i-- {
-						c := <-svr.lazyChan
-						c.lazywrite()
-					}
-				}
-			}
-
-			//优先从不阻塞输出
-			for i := len(svr.outChan); i > 0; i-- {
-				o := <-svr.outChan
-				o.write()
-			}
-			if c != nil {
-				c.lazywrite()
-			}
-			for i := len(svr.lazyChan); i > 0; i-- {
-				c := <-svr.lazyChan
-				c.lazywrite()
-			}
-		}
-	}()
-}
-func (lp *eventloop) msgOut(bufnum int) {
-	if bufnum == 0 {
-		bufnum = 512
-	}
-	lp.outbufchan = make(chan *out, bufnum)
-	lp.outChan = make(chan *out, bufnum)
-	lp.lazyChan = make(chan *conn, bufnum) //产生了EAGAIN阻塞的连接
-	lp.outclose = make(chan bool)
-	for i := 0; i < cap(lp.outbufchan); i++ {
-		lp.outbufchan <- &out{outbufchan: lp.outbufchan, lazyChan: lp.lazyChan}
-	}
-
-	go func() { //单个gorutinue 减少unix.EAGAIN cpu消耗
-
-		var c *conn
-		for {
-			c = nil
-			select {
-			case o := <-lp.outChan:
-				o.write()
-			case c = <-lp.lazyChan:
-			case <-lp.outclose:
-				//循环至超时退出
-				for {
-					select {
-					case o := <-lp.outChan:
-						o.write()
-					case c := <-lp.lazyChan:
-						lp.lazyChan <- c
-					case <-time.After(time.Second):
-						lp.outclose <- true
-						return
-					}
-					for i := len(lp.outChan); i > 0; i-- {
-						o := <-lp.outChan
-						o.write()
-					}
-					for i := len(lp.lazyChan); i > 0; i-- {
-						c := <-lp.lazyChan
-						c.lazywrite()
-					}
-				}
-			}
-
-			//优先从不阻塞输出
-			for i := len(lp.outChan); i > 0; i-- {
-				o := <-lp.outChan
-				o.write()
-			}
-			if c != nil {
-				c.lazywrite()
-			}
-			for i := len(lp.lazyChan); i > 0; i-- {
-				c := <-lp.lazyChan
-				c.lazywrite()
-			}
-		}
-	}()
-}
-
-func (o *out) write() {
-	c := o.c
-	defer func() {
-		o.c = nil
-		o.b.Reset()
-		o.outbufchan <- o
-	}()
-	if c.opened != connStateCloseOk {
-		if c.tlsconn != nil {
-			c.tlsconn.Write(o.b.Bytes())
-			o.b.Reset()
-			for c.outboundBuffer.Len() > 0 {
-				n, err := unix.Write(c.fd, c.outboundBuffer.Bytes())
-				if n <= 0 || err != nil {
-					if err == unix.EAGAIN {
-						c.eagainNum++
-						time.AfterFunc(delay*c.eagainNum, func() { o.lazyChan <- c })
-						return
-					}
-					c.Close()
-					break
-				}
-				c.outboundBuffer.Shift(n)
-			}
-		} else {
-			for c.outboundBuffer.Len() > 0 {
-				n, err := unix.Write(c.fd, c.outboundBuffer.Bytes())
-				if n <= 0 || err != nil {
-					if err == unix.EAGAIN {
-						c.outboundBuffer.Write(o.b.Bytes())
-						c.eagainNum++
-						time.AfterFunc(delay*c.eagainNum, func() { o.lazyChan <- c })
-						return
-					}
-					c.Close()
-					break
-				}
-				c.outboundBuffer.Shift(n)
-			}
-			for o.b.Len() > 0 {
-				n, err := unix.Write(c.fd, o.b.Bytes())
-				if n <= 0 || err != nil {
-					if err == unix.EAGAIN {
-						c.outboundBuffer.Write(o.b.Bytes())
-						c.eagainNum++
-						time.AfterFunc(delay*c.eagainNum, func() { o.lazyChan <- c })
-						return
-					}
-					c.Close()
-					break
-				}
-				o.b.Shift(n)
-			}
-		}
-
-	}
-
-}
-func (c *conn) lazywrite() {
-	if c.opened != connStateCloseOk {
-		if c.opened == connStateCloseLazyout && c.tlsconn != nil { //关闭前通知tls关闭
-			c.tlsconn.CloseWrite()
-		}
-		for c.outboundBuffer.Len() > 0 {
-			n, err := unix.Write(c.fd, c.outboundBuffer.Bytes())
-			if n <= 0 || err != nil {
-				if err == unix.EAGAIN {
-					c.eagainNum++
-					time.AfterFunc(delay*c.eagainNum, func() { c.loop.lazyChan <- c })
-					break
-				}
-				c.Close()
-				break
-			}
-			c.outboundBuffer.Shift(n)
-		}
-		if c.opened == connStateCloseLazyout { //彻底删除close的c
-
-			c.opened = connStateCloseOk
-
-			unix.Close(c.fd)
-			c.loop.poller.Delete(c.fd)
-			c.releaseTCP()
-		}
 	}
 
 }

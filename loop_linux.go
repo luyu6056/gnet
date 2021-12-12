@@ -9,7 +9,7 @@ package gnet
 func (lp *eventloop) handleEvent(fd int, ev uint32) error {
 	index := fd / lp.svr.subLoopGroup.len()
 	if index < len(lp.connections) {
-		if c := lp.connections[index]; c != nil && c.opened == connStateOk {
+		if c := lp.connections[index]; c != nil && c.state == connStateOk {
 			return lp.loopIn(c)
 		}
 	}

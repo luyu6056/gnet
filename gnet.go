@@ -106,7 +106,10 @@ type Conn interface {
 
 	UpgradeTls(config *tls.Config) error
 
-	WriteNoCodec(buf []byte)
+	WriteNoCodec(buf []byte) error
+
+	//阻塞并等待所有缓冲区输出,与AsyncWrite相反
+	FlushWrite(buf []byte, noCodec ...bool)
 }
 
 type (

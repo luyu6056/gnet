@@ -3,13 +3,13 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//go:build windows
 // +build windows
 
 package gnet
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"runtime/debug"
 	"sync/atomic"
@@ -99,11 +99,12 @@ func (el *eventloop) loopRead(ti *tcpIn) (err error) {
 	c.inboundBufferWrite(ti.buf.Bytes())
 	ti.buf.Reset()
 	msgbufpool.Put(ti.buf)
-	for inFrame := c.readframe(); inFrame != nil && c.done == 0; inFrame = c.readframe() {
+	for inFrame := c.readframe(); inFrame != nil && c.state == connStateOk; inFrame = c.readframe() {
 		action := el.eventHandler.React(inFrame, c)
 		switch action {
 		case None:
 		case Close:
+			c.state = connStateCloseReady
 			return el.loopClose(c)
 		case Shutdown:
 			return ErrServerShutdown
@@ -117,7 +118,7 @@ func (el *eventloop) loopRead(ti *tcpIn) (err error) {
 }
 
 func (el *eventloop) loopClose(c *stdConn) error {
-	atomic.StoreInt32(&c.done, 1)
+	atomic.CompareAndSwapInt32(&c.state, connStateCloseReady, connStateCloseLazyout)
 	_ = c.conn.SetReadDeadline(time.Now())
 	return nil
 }
@@ -169,14 +170,7 @@ func (el *eventloop) loopError(c *stdConn, err error) (e error) {
 	if _, ok := el.connections[c]; ok {
 		delete(el.connections, c)
 		if e = c.conn.Close(); e == nil {
-			switch atomic.LoadInt32(&c.done) {
-			case 0: // read error
-				if err != io.EOF {
-					//log.Printf("socket: %s with err: %v\n", c.remoteAddr.String(), err)
-				}
-			case 1: // closed
-				//log.Printf("socket: %s has been closed by client\n", c.remoteAddr.String())
-			}
+
 			switch el.eventHandler.OnClosed(c, err) {
 			case Shutdown:
 				return errClosing
@@ -238,7 +232,7 @@ func (el *eventloop) loopOut(bufnum int) {
 		el.outbufchan <- &out{}
 	}
 
-	go func() { //单个gorutinue 减少unix.EAGAIN cpu消耗
+	go func() {
 
 		for {
 			select {
@@ -251,7 +245,13 @@ func (el *eventloop) loopOut(bufnum int) {
 					} else {
 						o.c.conn.Write(o.b.Bytes())
 					}
-					if o.c.done == 1 {
+					for i := o.c.flushWaitNum; i > 0; i-- {
+						select {
+						case o.c.flushWait <- o.c.outboundBuffer.Len():
+						default:
+						}
+					}
+					if atomic.CompareAndSwapInt32(&o.c.state, connStateCloseLazyout, connStateCloseOk) {
 						o.c.ctx = nil
 						o.c.localAddr = nil
 						o.c.remoteAddr = nil
@@ -262,6 +262,7 @@ func (el *eventloop) loopOut(bufnum int) {
 						o.c.inboundBuffer = nil
 						o.c.outboundBuffer = nil
 					}
+
 				}
 
 				o.b.Reset()
