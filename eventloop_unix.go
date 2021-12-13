@@ -346,10 +346,18 @@ func (o *out) write() {
 	c := o.c
 	defer func() {
 		for i := o.c.flushWaitNum; i > 0; i-- {
-			select {
-			case o.c.flushWait <- o.c.outboundBuffer.Len():
-			default:
+			if o.c.outboundBuffer != nil {
+				select {
+				case o.c.flushWait <- o.c.outboundBuffer.Len():
+				default:
+				}
+			} else {
+				select {
+				case o.c.flushWait <- 0:
+				default:
+				}
 			}
+
 		}
 		o.c = nil
 		o.b.Reset()
