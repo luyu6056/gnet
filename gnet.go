@@ -205,6 +205,9 @@ func Serve(eventHandler EventHandler, addr string, opts ...Option) error {
 	return serve(eventHandler, addr, initOptions(opts...))
 }
 
+func Client(eventHandler EventHandler, opts ...Option) *ClientManage {
+	return client(eventHandler, initOptions(opts...))
+}
 func parseAddr(addr string) (network, address string) {
 	network = "tcp"
 	address = addr

@@ -23,6 +23,11 @@ func (svr *server) acceptNewConnection(fd int) error {
 			return err
 		}
 	}
+	if svr.opts.TCPNoDelay {
+		if err := unix.SetsockoptInt(nfd, unix.IPPROTO_TCP, unix.TCP_NODELAY, 1); err != nil {
+			return err
+		}
+	}
 	lp := svr.subLoopGroup.getbyfd(nfd)
 	c := newTCPConn(nfd, lp, sa)
 	if svr.tlsconfig != nil {

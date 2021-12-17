@@ -68,7 +68,11 @@ func (lp *eventloop) loopAccept(fd int) error {
 				return err
 			}
 		}
-
+		if lp.svr.opts.TCPNoDelay {
+			if err := unix.SetsockoptInt(nfd, unix.IPPROTO_TCP, unix.TCP_NODELAY, 1); err != nil {
+				return err
+			}
+		}
 		newlp := lp.svr.subLoopGroup.getbyfd(nfd)
 		c := newTCPConn(nfd, newlp, sa)
 		if lp.svr.tlsconfig != nil {
@@ -346,18 +350,10 @@ func (o *out) write() {
 	c := o.c
 	defer func() {
 		for i := o.c.flushWaitNum; i > 0; i-- {
-			if o.c.outboundBuffer != nil {
-				select {
-				case o.c.flushWait <- o.c.outboundBuffer.Len():
-				default:
-				}
-			} else {
-				select {
-				case o.c.flushWait <- 0:
-				default:
-				}
+			select {
+			case o.c.flushWait <- o.c.outboundBuffer.Len():
+			default:
 			}
-
 		}
 		o.c = nil
 		o.b.Reset()
