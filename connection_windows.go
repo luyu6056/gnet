@@ -241,6 +241,7 @@ func (c *stdConn) FlushWrite(data []byte, noCodec ...bool) {
 	} else {
 		c.AsyncWrite(data)
 	}
+
 out:
 	for c.state == connStateOk {
 		select {

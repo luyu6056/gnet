@@ -405,28 +405,32 @@ func (svr *server) signalHandler() {
 			// stop
 			log.Println("signal: stop")
 			svr.signalShutdown()
+			syscall.Kill(unix.Getpid(), syscall.SIGTERM)
 			return
 		case syscall.SIGUSR1:
-			// reload
-			log.Println("signal: reload")
-			f, err := svr.ln.ln.(*net.TCPListener).File()
-			var args []string
-			if err == nil {
-				args = []string{"-graceful"}
+			if svr.ln != nil {
+				// reload
+				log.Println("signal: reload")
+				f, err := svr.ln.ln.(*net.TCPListener).File()
+				var args []string
+				if err == nil {
+					args = []string{"-graceful"}
+				}
+				cmd := exec.Command(os.Args[0], args...)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				// put socket FD at the first entry
+				cmd.ExtraFiles = []*os.File{f}
+				cmd.Start()
+				svr.signalShutdown()
 			}
-			cmd := exec.Command(os.Args[0], args...)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			// put socket FD at the first entry
-			cmd.ExtraFiles = []*os.File{f}
-			cmd.Start()
-			svr.signalShutdown()
 
 			return
 		}
 	case <-svr.close:
 		log.Println("close gnet")
 		svr.signalShutdown()
+		syscall.Kill(unix.Getpid(), syscall.SIGTERM)
 		return
 	}
 

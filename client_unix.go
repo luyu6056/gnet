@@ -24,7 +24,7 @@ func (svr *ClientManage) Dial(network, addr string) (Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		nfd, err := unixDailTcp(tcpaddr)
+		nfd, err := unixDialTcp(tcpaddr)
 		if err != nil {
 			return nil, err
 		}
@@ -53,13 +53,13 @@ func (svr *ClientManage) Dial(network, addr string) (Conn, error) {
 	}
 	return nil, nil
 }
-func unixDailTcp(tcpAddr *net.TCPAddr) (int, error) {
+func unixDialTcp(tcpAddr *net.TCPAddr) (int, error) {
 	sockfd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
 	if err != nil {
 		return 0, errors.New("创建socket失败 " + err.Error())
 	}
 
-	rsa := &syscall.SockaddrInet4{Addr: [4]byte{tcpAddr.IP[0], tcpAddr.IP[1], tcpAddr.IP[2], tcpAddr.IP[3]}, Port: tcpAddr.Port}
+	rsa := &syscall.SockaddrInet4{Addr: [4]byte{tcpAddr.IP[12], tcpAddr.IP[13], tcpAddr.IP[14], tcpAddr.IP[15]}, Port: tcpAddr.Port}
 	err = syscall.Connect(sockfd, rsa)
 	return sockfd, err
 }

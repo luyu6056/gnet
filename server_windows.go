@@ -67,6 +67,7 @@ func (svr *server) signalShutdown(err error) {
 		svr.cond.Signal()
 		svr.cond.L.Unlock()
 	})
+	os.Exit(1)
 }
 
 func (svr *server) startListener() {
