@@ -30,9 +30,12 @@ func (svr *ClientManage) Dial(network, addr string) (Conn, error) {
 		}
 		lp := svr.server.subLoopGroup.next()
 		c := newTCPConn(nfd, lp, nil)
-		if err := unix.SetsockoptInt(nfd, unix.IPPROTO_TCP, unix.TCP_NODELAY, 1); err != nil {
-			return nil, err
+		if svr.opts.TCPNoDelay {
+			if err := unix.SetsockoptInt(nfd, unix.IPPROTO_TCP, unix.TCP_NODELAY, 1); err != nil {
+				return nil, err
+			}
 		}
+
 		sa, _ := syscall.Getsockname(nfd)
 		c.localAddr = &net.TCPAddr{IP: sa.(*syscall.SockaddrInet4).Addr[0:], Port: sa.(*syscall.SockaddrInet4).Port}
 		c.remoteAddr = tcpaddr

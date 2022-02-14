@@ -189,7 +189,7 @@ func (c *conn) AsyncWrite(buf []byte) error {
 	if len(encodedBuf) > 0 {
 		o := <-c.loop.outbufchan
 		o.c = c
-		o.b.Write(buf)
+		o.b.Write(encodedBuf)
 		c.loop.outChan <- o
 	} else if err != nil && atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
 		_ = c.loop.poller.Trigger(func() error {

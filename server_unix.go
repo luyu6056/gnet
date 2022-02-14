@@ -238,9 +238,7 @@ func (svr *server) stop() {
 
 //tcp平滑重启，开启ReusePort有效，关闭ReusePort则会造成短暂的错误
 var (
-	reload   = flag.Bool("reload", false, "listen on fd open 3 (internal use only)")
-	graceful = flag.Bool("graceful", false, "listen on fd open 3 (internal use only)")
-	stop     = flag.Bool("stop", false, "stop the server from pid")
+	reload, graceful, stop *bool
 )
 
 func serve(eventHandler EventHandler, addr string, options *Options) error {
@@ -258,7 +256,7 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 		ln.pconn, err = net.ListenPacket(ln.network, ln.addr)
 	} else {
 		flag.Parse()
-		if *stop {
+		if stop != nil && *stop {
 			b, err := ioutil.ReadFile("./pid")
 			if err == nil {
 				pidstr := string(b)
@@ -273,7 +271,7 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 			log.Println("stop server fail or server not start")
 			return nil
 		}
-		if *reload {
+		if reload != nil && *reload {
 			b, err := ioutil.ReadFile("./pid")
 			if err == nil {
 				pidstr := string(b)
@@ -286,7 +284,7 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 				}
 			}
 		}
-		if *graceful {
+		if graceful != nil && *graceful {
 			f := os.NewFile(3, "")
 			ln.ln, err = net.FileListener(f)
 		} else {
@@ -434,4 +432,12 @@ func (svr *server) signalHandler() {
 		return
 	}
 
+}
+func init() {
+	defer func() {
+		recover()
+	}()
+	reload = flag.Bool("reload", false, "listen on fd open 3 (internal use only)")
+	graceful = flag.Bool("graceful", false, "listen on fd open 3 (internal use only)")
+	stop = flag.Bool("stop", false, "stop the server from pid")
 }
