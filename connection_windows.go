@@ -28,7 +28,10 @@ type stderr struct {
 	c   *stdConn
 	err error
 }
-
+type tcpClose struct {
+	c   *stdConn
+	err error
+}
 type wakeReq struct {
 	c *stdConn
 }

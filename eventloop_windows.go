@@ -66,6 +66,8 @@ func (el *eventloop) loopRun() {
 			err = el.loopError(v.c, v.err)
 		case wakeReq:
 			err = el.loopWake(v.c)
+		case tcpClose:
+			el.loopReleaseTcp(v.c, err)
 		case func() error:
 			err = v()
 		}
@@ -113,7 +115,6 @@ func (el *eventloop) loopRead(ti *tcpIn) (err error) {
 			return el.loopClose(c)
 		}
 	}
-
 	return nil
 }
 
@@ -175,17 +176,19 @@ func (el *eventloop) loopError(c *stdConn, err error) (e error) {
 			case Shutdown:
 				return errClosing
 			}
-			c.releaseTCP()
+
 		}
 	}
 	return
 }
-
+func (el *eventloop) loopReleaseTcp(c *stdConn, err error) {
+	el.loopError(c, err)
+	c.releaseTCP()
+}
 func (el *eventloop) loopWake(c *stdConn) error {
-	if c.RemoteAddr().Network() == "tcp" {
-		if _, ok := el.connections[c]; !ok {
-			return nil // ignore stale wakes.
-		}
+
+	if _, ok := el.connections[c]; !ok {
+		return nil // ignore stale wakes.
 	}
 
 	action := el.eventHandler.React(nil, c)

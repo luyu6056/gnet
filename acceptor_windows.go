@@ -51,7 +51,7 @@ func (svr *server) listenerRun() {
 					n, err := c.conn.Read(packet)
 					if err != nil {
 						_ = c.conn.SetReadDeadline(time.Time{})
-						el.ch <- &stderr{c, err}
+						el.ch <- tcpClose{c, err}
 						return
 					}
 
