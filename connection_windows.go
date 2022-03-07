@@ -110,7 +110,7 @@ func (c *stdConn) tlsread() (frame []byte) {
 		if len(data) < 5 || len(data) < 5+int(data[3])<<8|int(data[4]) {
 			return nil
 		}
-		if err := c.tlsconn.Handshake(); err != nil || len(c.tlsconn.RawData()) == 0 {
+		if err = c.tlsconn.Handshake(); err != nil || len(c.tlsconn.RawData()) == 0 {
 			if err != nil {
 				c.Close()
 			}

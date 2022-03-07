@@ -15,6 +15,10 @@ import (
 type ClientManage struct {
 	*server
 }
+type clientdail struct {
+	c           *stdConn
+	clientMange *ClientManage
+}
 
 func (svr *ClientManage) Dial(network, addr string) (Conn, error) {
 
@@ -26,9 +30,11 @@ func (svr *ClientManage) Dial(network, addr string) (Conn, error) {
 		}
 		el := svr.server.subLoopGroup.next()
 		c := newTCPConn(netconn, el)
-		if err = svr.loopOpenClient(c, el); err != nil {
-			return nil, err
+		el.ch <- clientdail{
+			c:           c,
+			clientMange: svr,
 		}
+
 		go func() {
 			var packet = make([]byte, 0x10000)
 			for {

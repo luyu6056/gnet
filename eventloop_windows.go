@@ -70,6 +70,8 @@ func (el *eventloop) loopRun() {
 			el.loopReleaseTcp(v.c, err)
 		case func() error:
 			err = v()
+		case clientdail:
+			err = v.clientMange.loopOpenClient(v.c, el)
 		}
 		if err != nil {
 			return
