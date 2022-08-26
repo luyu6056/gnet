@@ -106,10 +106,7 @@ type Conn interface {
 
 	UpgradeTls(config *tls.Config) error
 
-	WriteNoCodec(buf []byte) error
-
-	//阻塞并等待所有缓冲区输出,与AsyncWrite相反
-	FlushWrite(buf []byte, noCodec ...bool)
+	WriteNoCodec(buf []byte)
 }
 
 type (
@@ -205,9 +202,6 @@ func Serve(eventHandler EventHandler, addr string, opts ...Option) error {
 	return serve(eventHandler, addr, initOptions(opts...))
 }
 
-func Client(eventHandler EventHandler, opts ...Option) *ClientManage {
-	return client(eventHandler, initOptions(opts...))
-}
 func parseAddr(addr string) (network, address string) {
 	network = "tcp"
 	address = addr

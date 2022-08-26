@@ -3,13 +3,13 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-//go:build windows
 // +build windows
 
 package gnet
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"runtime/debug"
 	"sync/atomic"
@@ -66,12 +66,8 @@ func (el *eventloop) loopRun() {
 			err = el.loopError(v.c, v.err)
 		case wakeReq:
 			err = el.loopWake(v.c)
-		case tcpClose:
-			el.loopReleaseTcp(v.c, err)
 		case func() error:
 			err = v()
-		case clientdail:
-			err = v.clientMange.loopOpenClient(v.c, el)
 		}
 		if err != nil {
 			return
@@ -103,12 +99,11 @@ func (el *eventloop) loopRead(ti *tcpIn) (err error) {
 	c.inboundBufferWrite(ti.buf.Bytes())
 	ti.buf.Reset()
 	msgbufpool.Put(ti.buf)
-	for inFrame := c.readframe(); inFrame != nil && c.state == connStateOk; inFrame = c.readframe() {
+	for inFrame := c.readframe(); inFrame != nil; inFrame = c.readframe() {
 		action := el.eventHandler.React(inFrame, c)
 		switch action {
 		case None:
 		case Close:
-			c.state = connStateCloseReady
 			return el.loopClose(c)
 		case Shutdown:
 			return ErrServerShutdown
@@ -117,11 +112,12 @@ func (el *eventloop) loopRead(ti *tcpIn) (err error) {
 			return el.loopClose(c)
 		}
 	}
+
 	return nil
 }
 
 func (el *eventloop) loopClose(c *stdConn) error {
-	atomic.CompareAndSwapInt32(&c.state, connStateCloseReady, connStateCloseLazyout)
+	atomic.StoreInt32(&c.done, 1)
 	_ = c.conn.SetReadDeadline(time.Now())
 	return nil
 }
@@ -173,24 +169,29 @@ func (el *eventloop) loopError(c *stdConn, err error) (e error) {
 	if _, ok := el.connections[c]; ok {
 		delete(el.connections, c)
 		if e = c.conn.Close(); e == nil {
-
+			switch atomic.LoadInt32(&c.done) {
+			case 0: // read error
+				if err != io.EOF {
+					//log.Printf("socket: %s with err: %v\n", c.remoteAddr.String(), err)
+				}
+			case 1: // closed
+				//log.Printf("socket: %s has been closed by client\n", c.remoteAddr.String())
+			}
 			switch el.eventHandler.OnClosed(c, err) {
 			case Shutdown:
 				return errClosing
 			}
-
+			c.releaseTCP()
 		}
 	}
 	return
 }
-func (el *eventloop) loopReleaseTcp(c *stdConn, err error) {
-	el.loopError(c, err)
-	c.releaseTCP()
-}
-func (el *eventloop) loopWake(c *stdConn) error {
 
-	if _, ok := el.connections[c]; !ok {
-		return nil // ignore stale wakes.
+func (el *eventloop) loopWake(c *stdConn) error {
+	if c.RemoteAddr().Network() == "tcp" {
+		if _, ok := el.connections[c]; !ok {
+			return nil // ignore stale wakes.
+		}
 	}
 
 	action := el.eventHandler.React(nil, c)
@@ -237,39 +238,19 @@ func (el *eventloop) loopOut(bufnum int) {
 		el.outbufchan <- &out{}
 	}
 
-	go func() {
+	go func() { //单个gorutinue 减少unix.EAGAIN cpu消耗
 
 		for {
+
 			select {
 			case o := <-el.outChan:
-				if o.c.outboundBuffer != nil {
-					if o.c.tlsconn != nil {
-						o.c.tlsconn.Write(o.b.Bytes())
-						o.c.conn.Write(o.c.outboundBuffer.Bytes())
-						o.c.outboundBuffer.Reset()
-					} else {
-						o.c.conn.Write(o.b.Bytes())
-					}
-					for i := o.c.flushWaitNum; i > 0; i-- {
-						select {
-						case o.c.flushWait <- o.c.outboundBuffer.Len():
-						default:
-						}
-					}
-					if atomic.CompareAndSwapInt32(&o.c.state, connStateCloseLazyout, connStateCloseOk) {
-						o.c.ctx = nil
-						o.c.localAddr = nil
-						o.c.remoteAddr = nil
-						o.c.inboundBuffer.Reset()
-						o.c.outboundBuffer.Reset()
-						msgbufpool.Put(o.c.outboundBuffer)
-						msgbufpool.Put(o.c.inboundBuffer)
-						o.c.inboundBuffer = nil
-						o.c.outboundBuffer = nil
-					}
-
+				if o.c.tlsconn != nil {
+					o.c.tlsconn.Write(o.b.Bytes())
+					o.c.conn.Write(o.c.outboundBuffer.Bytes())
+					o.c.outboundBuffer.Reset()
+				} else {
+					o.c.conn.Write(o.b.Bytes())
 				}
-
 				o.b.Reset()
 				el.outbufchan <- o
 			case <-el.outclose:

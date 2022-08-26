@@ -44,8 +44,6 @@ type Options struct {
 	OutbufNum int
 
 	Tlsconfig *tls.Config
-
-	TCPNoDelay bool
 }
 
 // WithOptions sets up all options.
@@ -115,11 +113,5 @@ func WithTls(tlsconfig *tls.Config) Option {
 func WithMultiOut(b bool) Option {
 	return func(opts *Options) {
 		opts.MultiOut = b
-	}
-}
-
-func WithTCPNoDelay(b bool) Option {
-	return func(opts *Options) {
-		opts.TCPNoDelay = b
 	}
 }

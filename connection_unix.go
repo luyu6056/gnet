@@ -35,7 +35,7 @@ type conn struct {
 	ctx                interface{}    // user-defined context
 	loop               *eventloop     // connected loop
 	codec              ICodec         // codec for TCP
-	state              int32          // connection opened event fired
+	opened             int32          // connection opened event fired
 	localAddr          net.Addr       // local addr
 	remoteAddr         net.Addr       // remote addr
 	inboundBuffer      *tls.MsgBuffer // buffer for data from client
@@ -44,8 +44,6 @@ type conn struct {
 	inboundBufferWrite func([]byte) (int, error)
 	readframe          func() []byte
 	eagainNum          time.Duration
-	flushWaitNum       int64
-	flushWait          chan int
 }
 
 func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
@@ -56,7 +54,6 @@ func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
 		codec:          lp.codec,
 		inboundBuffer:  msgbufpool.Get().(*tls.MsgBuffer),
 		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
-		flushWait:      make(chan int),
 	}
 	c.inboundBufferWrite = c.inboundBuffer.Write
 	c.readframe = c.read
@@ -105,7 +102,7 @@ func (c *conn) tlsread() (frame []byte) {
 			return
 		}
 		if err = c.tlsconn.Handshake(); err != nil {
-			if err != nil && atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
+			if err != nil && atomic.CompareAndSwapInt32(&c.opened, connStateOk, connStateCloseReady) {
 				_ = c.loop.poller.Trigger(func() error {
 					return c.loop.loopCloseConn(c, err)
 				})
@@ -119,7 +116,7 @@ func (c *conn) tlsread() (frame []byte) {
 
 	for err = c.tlsconn.ReadFrame(); err == nil; err = c.tlsconn.ReadFrame() { //循环读取直到获得
 		frame, err = c.codec.Decode(c)
-		if err != nil && atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
+		if err != nil && atomic.CompareAndSwapInt32(&c.opened, connStateOk, connStateCloseReady) {
 			_ = c.loop.poller.Trigger(func() error {
 				return c.loop.loopCloseConn(c, err)
 			})
@@ -133,7 +130,7 @@ func (c *conn) tlsread() (frame []byte) {
 }
 func (c *conn) read() []byte {
 	frame, err := c.codec.Decode(c)
-	if err != nil && atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
+	if err != nil && atomic.CompareAndSwapInt32(&c.opened, connStateOk, connStateCloseReady) {
 		_ = c.loop.poller.Trigger(func() error {
 			return c.loop.loopCloseConn(c, err)
 		})
@@ -189,9 +186,9 @@ func (c *conn) AsyncWrite(buf []byte) error {
 	if len(encodedBuf) > 0 {
 		o := <-c.loop.outbufchan
 		o.c = c
-		o.b.Write(encodedBuf)
+		o.b.Write(buf)
 		c.loop.outChan <- o
-	} else if err != nil && atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
+	} else if err != nil && atomic.CompareAndSwapInt32(&c.opened, connStateOk, connStateCloseReady) {
 		_ = c.loop.poller.Trigger(func() error {
 			return c.loop.loopCloseConn(c, err)
 
@@ -199,12 +196,11 @@ func (c *conn) AsyncWrite(buf []byte) error {
 	}
 	return err
 }
-func (c *conn) WriteNoCodec(buf []byte) error {
+func (c *conn) WriteNoCodec(buf []byte) {
 	o := <-c.loop.outbufchan
 	o.c = c
 	o.b.Write(buf)
 	c.loop.outChan <- o
-	return nil
 }
 func (c *conn) SendTo(buf []byte) error {
 	return unix.Sendto(c.fd, buf, 0, c.sa)
@@ -222,8 +218,7 @@ func (c *conn) SetContext(ctx interface{}) { c.ctx = ctx }
 func (c *conn) LocalAddr() net.Addr        { return c.localAddr }
 func (c *conn) RemoteAddr() net.Addr       { return c.remoteAddr }
 func (c *conn) Close() error {
-
-	if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
+	if atomic.CompareAndSwapInt32(&c.opened, connStateOk, connStateCloseReady) {
 		_ = c.loop.poller.Trigger(func() error {
 			return c.loop.loopCloseConn(c, nil)
 		})
@@ -244,32 +239,9 @@ func (c *conn) UpgradeTls(config *tls.Config) (err error) {
 	}
 	//握手失败的关了
 	time.AfterFunc(time.Second*5, func() {
-		if c.state == connStateOk && (c.tlsconn == nil || !c.tlsconn.HandshakeComplete()) {
+		if c.opened == connStateOk && (c.tlsconn == nil || !c.tlsconn.HandshakeComplete()) {
 			c.Close()
 		}
 	})
 	return err
-}
-func (c *conn) FlushWrite(data []byte, noCodec ...bool) {
-	atomic.AddInt64(&c.flushWaitNum, 1)
-	if len(noCodec) > 0 && noCodec[0] {
-		c.WriteNoCodec(data)
-	} else {
-		c.AsyncWrite(data)
-	}
-out:
-	for c.state == connStateOk {
-		select {
-		case buflen := <-c.flushWait:
-			if buflen == 0 {
-				break out
-			}
-		case <-time.After(time.Millisecond * 10):
-
-			if c.state == connStateOk && (c.outboundBuffer == nil || c.outboundBuffer.Len() == 0) {
-				break out
-			}
-		}
-	}
-	atomic.AddInt64(&c.flushWaitNum, -1)
 }

@@ -3,7 +3,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-//go:build windows
 // +build windows
 
 package gnet
@@ -11,27 +10,15 @@ package gnet
 import (
 	"net"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/luyu6056/tls"
-)
-
-const (
-	connStateOk           = 1
-	connStateCloseReady   = -0
-	connStateCloseLazyout = -1
-	connStateCloseOk      = -2
 )
 
 type stderr struct {
 	c   *stdConn
 	err error
 }
-type tcpClose struct {
-	c   *stdConn
-	err error
-}
+
 type wakeReq struct {
 	c *stdConn
 }
@@ -49,7 +36,7 @@ type stdConn struct {
 	ctx                           interface{}    // user-defined context
 	conn                          net.Conn       // original connection
 	loop                          *eventloop     // owner loop
-	state                         int32          // connState
+	done                          int32          // 0: attached, 1: closed
 	codec                         ICodec         // codec for TCP
 	localAddr                     net.Addr       // local server addr
 	remoteAddr                    net.Addr       // remote peer addr
@@ -57,8 +44,6 @@ type stdConn struct {
 	tlsconn                       *tls.Conn
 	inboundBufferWrite            func([]byte) (int, error)
 	readframe                     func() []byte
-	flushWait                     chan int
-	flushWaitNum                  int64
 }
 
 var msgbufpool = sync.Pool{New: func() interface{} {
@@ -72,8 +57,6 @@ func newTCPConn(conn net.Conn, lp *eventloop) *stdConn {
 		codec:          lp.codec,
 		inboundBuffer:  msgbufpool.Get().(*tls.MsgBuffer),
 		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
-		flushWait:      make(chan int),
-		state:          connStateOk,
 	}
 	c.inboundBufferWrite = c.inboundBuffer.Write
 	c.readframe = c.read
@@ -81,9 +64,14 @@ func newTCPConn(conn net.Conn, lp *eventloop) *stdConn {
 }
 
 func (c *stdConn) releaseTCP() {
-	o := <-c.loop.outbufchan
-	o.c = c
-	c.loop.outChan <- o //修改至outchan进行回收
+	c.ctx = nil
+	c.localAddr = nil
+	c.remoteAddr = nil
+	c.inboundBuffer.Reset()
+	c.outboundBuffer.Reset()
+	msgbufpool.Put(c.outboundBuffer)
+	msgbufpool.Put(c.inboundBuffer)
+	c.inboundBuffer = nil
 }
 
 func newUDPConn(lp *eventloop, localAddr, remoteAddr net.Addr) *stdConn {
@@ -110,7 +98,7 @@ func (c *stdConn) tlsread() (frame []byte) {
 		if len(data) < 5 || len(data) < 5+int(data[3])<<8|int(data[4]) {
 			return nil
 		}
-		if err = c.tlsconn.Handshake(); err != nil || len(c.tlsconn.RawData()) == 0 {
+		if err := c.tlsconn.Handshake(); err != nil || len(c.tlsconn.RawData()) == 0 {
 			if err != nil {
 				c.Close()
 			}
@@ -184,22 +172,27 @@ func (c *stdConn) AsyncWrite(buf []byte) error {
 	}
 	return nil
 }
-
-//用于直出不编码的出口，tls调用
-func (c *stdConn) Write(buf []byte) (n int, err error) {
-	o := <-c.loop.outbufchan
-	o.c = c
-	o.b.Write(buf)
-	c.loop.outChan <- o
+func (c *stdConn) Write(buf []byte) (int, error) {
+	if encodedBuf, err := c.codec.Encode(c, buf); err == nil {
+		if len(encodedBuf) > 0 {
+			o := <-c.loop.outbufchan
+			o.b.Write(encodedBuf)
+			o.c = c
+			c.loop.outChan <- o
+		}
+	} else {
+		c.loop.ch <- func() error {
+			c.loop.loopError(c, err)
+			return nil
+		}
+	}
 	return len(buf), nil
 }
-
-func (c *stdConn) WriteNoCodec(buf []byte) error {
+func (c *stdConn) WriteNoCodec(buf []byte) {
 	o := <-c.loop.outbufchan
 	o.b.Write(buf)
 	o.c = c
 	c.loop.outChan <- o
-	return nil
 }
 func (c *stdConn) SendTo(buf []byte) (err error) {
 	_, err = c.loop.svr.ln.pconn.WriteTo(buf, c.remoteAddr)
@@ -216,7 +209,6 @@ func (c *stdConn) Wake() error {
 }
 func (c *stdConn) Close() error {
 	c.loop.ch <- func() error {
-		c.state = connStateCloseReady
 		c.loop.loopClose(c)
 		return nil
 	}
@@ -235,29 +227,4 @@ func (c *stdConn) UpgradeTls(config *tls.Config) (err error) {
 		}
 	}
 	return err
-}
-
-func (c *stdConn) FlushWrite(data []byte, noCodec ...bool) {
-	atomic.AddInt64(&c.flushWaitNum, 1)
-	if len(noCodec) > 0 && noCodec[0] {
-		c.WriteNoCodec(data)
-	} else {
-		c.AsyncWrite(data)
-	}
-
-out:
-	for c.state == connStateOk {
-		select {
-		case buflen := <-c.flushWait:
-			if buflen == 0 {
-				break out
-			}
-		case <-time.After(time.Millisecond * 10):
-
-			if c.state == connStateOk && (c.outboundBuffer == nil || c.outboundBuffer.Len() == 0) {
-				break out
-			}
-		}
-	}
-	atomic.AddInt64(&c.flushWaitNum, -1)
 }

@@ -67,7 +67,6 @@ func (svr *server) signalShutdown(err error) {
 		svr.cond.Signal()
 		svr.cond.L.Unlock()
 	})
-	os.Exit(1)
 }
 
 func (svr *server) startListener() {
@@ -103,12 +102,10 @@ func (svr *server) stop() {
 
 	// Wait on a signal for shutdown.
 	log.Printf("server is being shutdown with err: %v\n", svr.waitForShutdown())
-	if svr.ln != nil {
-		// Close listener.
-		svr.ln.close()
-		svr.listenerWG.Wait()
 
-	}
+	// Close listener.
+	svr.ln.close()
+	svr.listenerWG.Wait()
 
 	return
 }
@@ -116,6 +113,7 @@ func (svr *server) stop() {
 func serve(eventHandler EventHandler, addr string, options *Options) (err error) {
 	var ln listener
 	defer ln.close()
+
 	ln.network, ln.addr = parseAddr(addr)
 	if ln.network == "unix" {
 		sniffError(os.RemoveAll(ln.addr))
@@ -169,7 +167,6 @@ func serve(eventHandler EventHandler, addr string, options *Options) (err error)
 			svr.close <- errors.New("close by server.Close()")
 		},
 	}
-
 	switch svr.eventHandler.OnInitComplete(server) {
 	case None:
 	case Shutdown:

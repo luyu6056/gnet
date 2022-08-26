@@ -3,7 +3,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-//go:build windows
 // +build windows
 
 package gnet
@@ -46,12 +45,12 @@ func (svr *server) listenerRun() {
 			}
 			el.ch <- c
 			go func() {
-				var packet = make([]byte, 0x10000)
+				var packet [0x10000]byte
 				for {
-					n, err := c.conn.Read(packet)
+					n, err := c.conn.Read(packet[:])
 					if err != nil {
 						_ = c.conn.SetReadDeadline(time.Time{})
-						el.ch <- tcpClose{c, err}
+						el.ch <- &stderr{c, err}
 						return
 					}
 
