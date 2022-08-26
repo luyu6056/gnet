@@ -3,14 +3,14 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//go:build windows
 // +build windows
 
 package gnet
 
 import (
-	"time"
-
 	"github.com/luyu6056/tls"
+	"time"
 )
 
 func (svr *server) listenerRun() {
@@ -30,6 +30,7 @@ func (svr *server) listenerRun() {
 			c.inboundBuffer.Write(packet[:n])
 			el.ch <- &udpIn{c}
 		} else {
+
 			// Accept TCP socket.
 			conn, e := svr.ln.ln.Accept()
 			if e != nil {
@@ -43,14 +44,15 @@ func (svr *server) listenerRun() {
 					return
 				}
 			}
-			el.ch <- c
+
+			el.loopAccept(c)
 			go func() {
-				var packet [0x10000]byte
+				var packet = make([]byte, 2000)
 				for {
-					n, err := c.conn.Read(packet[:])
+					n, err := c.conn.Read(packet)
 					if err != nil {
 						_ = c.conn.SetReadDeadline(time.Time{})
-						el.ch <- &stderr{c, err}
+						el.ch <- tcpClose{c, err}
 						return
 					}
 

@@ -1,16 +1,36 @@
-// Copyright 2019 Andy Pan. All rights reserved.
-// Use of this source code is governed by an MIT-style
-// license that can be found in the LICENSE file.
+// Copyright (c) 2019 Andy Pan
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
+//go:build linux
 // +build linux
 
 package netpoll
 
 import "golang.org/x/sys/unix"
 
+// IOEvent is the integer type of I/O events on Linux.
+type IOEvent = uint32
+
 const (
-	// InitEvents represents the initial length of poller event-list.
-	InitEvents = 128
+	// InitPollEventsCap represents the initial capacity of poller event-list.
+	InitPollEventsCap = 128
+	// MaxPollEventsCap is the maximum limitation of events that the poller can process.
+	MaxPollEventsCap = 1024
+	// MinPollEventsCap is the minimum limitation of events that the poller can process.
+	MinPollEventsCap = 32
+	// MaxAsyncTasksAtOneTime is the maximum amount of asynchronous tasks that the event-loop will process at one time.
+	MaxAsyncTasksAtOneTime = 256
 	// ErrEvents represents exceptional events that are not read/write, like socket being closed,
 	// reading/writing from/to a closed socket, etc.
 	ErrEvents = unix.EPOLLERR | unix.EPOLLHUP | unix.EPOLLRDHUP
@@ -22,14 +42,23 @@ const (
 
 type eventList struct {
 	size   int
-	events []unix.EpollEvent
+	events []epollevent
 }
 
 func newEventList(size int) *eventList {
-	return &eventList{size, make([]unix.EpollEvent, size)}
+	return &eventList{size, make([]epollevent, size)}
 }
 
-func (el *eventList) increase() {
-	el.size <<= 1
-	el.events = make([]unix.EpollEvent, el.size)
+func (el *eventList) expand() {
+	if newSize := el.size << 1; newSize <= MaxPollEventsCap {
+		el.size = newSize
+		el.events = make([]epollevent, newSize)
+	}
+}
+
+func (el *eventList) shrink() {
+	if newSize := el.size >> 1; newSize >= MinPollEventsCap {
+		el.size = newSize
+		el.events = make([]epollevent, newSize)
+	}
 }

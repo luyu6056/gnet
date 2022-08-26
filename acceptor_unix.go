@@ -23,6 +23,11 @@ func (svr *server) acceptNewConnection(fd int) error {
 			return err
 		}
 	}
+	if svr.opts.TCPNoDelay {
+		if err := unix.SetsockoptInt(nfd, unix.IPPROTO_TCP, unix.TCP_NODELAY, 1); err != nil {
+			return err
+		}
+	}
 	lp := svr.subLoopGroup.getbyfd(nfd)
 	c := newTCPConn(nfd, lp, sa)
 	if svr.tlsconfig != nil {
@@ -30,17 +35,5 @@ func (svr *server) acceptNewConnection(fd int) error {
 			return err
 		}
 	}
-	_ = lp.poller.Trigger(func() (err error) {
-		if err = lp.poller.AddRead(nfd); err != nil {
-			return
-		}
-		index := c.fd / lp.svr.subLoopGroup.len()
-		if index >= len(lp.connections) {
-			lp.connections = append(lp.connections, make([]*conn, len(lp.connections))...)
-		}
-		lp.connections[index] = c
-		err = lp.loopOpen(c)
-		return
-	})
-	return nil
+	return lp.poller.Trigger(lp.addread,c)
 }

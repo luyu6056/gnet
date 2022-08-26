@@ -9,26 +9,29 @@ package gnet
 
 import (
 	"fmt"
-	"net"
 	"runtime/debug"
-	"sync/atomic"
 	"time"
+
+	"github.com/luyu6056/gnet/pkg/errors"
+
+	"github.com/luyu6056/gnet/internal/socket"
 
 	"github.com/luyu6056/gnet/internal/netpoll"
 	"golang.org/x/sys/unix"
 )
 
 type eventloop struct {
-	idx                 int             // loop index in the server loops list
-	svr                 *server         // server in loop
-	codec               ICodec          // codec for TCP
-	packet              []byte          // read packet buffer
-	poller              *netpoll.Poller // epoll or kqueue
-	connections         []*conn         // loop connections fd -> conn
-	eventHandler        EventHandler    // user eventHandler
-	outbufchan, outChan chan *out
-	outclose            chan bool
-	lazyChan            chan *conn
+	idx            int             // loop index in the server loops list
+	svr            *server         // server in loop
+	codec          ICodec          // codec for TCP
+	packet         []byte          // read packet buffer
+	poller         *netpoll.Poller // epoll or kqueue
+	eventHandler   EventHandler    // user eventHandler
+	outChan        chan out
+	lazyChan       chan *conn
+	outclose       chan bool
+	udpSockets     map[int]*conn
+	pollAttachment *netpoll.PollAttachment
 }
 
 func (lp *eventloop) loopRun() {
@@ -47,7 +50,7 @@ func (lp *eventloop) loopRun() {
 		go lp.loopTicker()
 	}
 
-	sniffError(lp.poller.Polling(lp.handleEvent))
+	sniffError(lp.startPolling(lp.handleEvent))
 }
 
 func (lp *eventloop) loopAccept(fd int) error {
@@ -67,7 +70,11 @@ func (lp *eventloop) loopAccept(fd int) error {
 				return err
 			}
 		}
-
+		if lp.svr.opts.TCPNoDelay {
+			if err := unix.SetsockoptInt(nfd, unix.IPPROTO_TCP, unix.TCP_NODELAY, 1); err != nil {
+				return err
+			}
+		}
 		newlp := lp.svr.subLoopGroup.getbyfd(nfd)
 		c := newTCPConn(nfd, newlp, sa)
 		if lp.svr.tlsconfig != nil {
@@ -75,77 +82,47 @@ func (lp *eventloop) loopAccept(fd int) error {
 				return err
 			}
 		}
-		newlp.poller.Trigger(func() (err error) {
-			if err = newlp.poller.AddRead(c.fd); err == nil {
-				index := c.fd / newlp.svr.subLoopGroup.len()
-				if index >= len(newlp.connections) {
-					newlp.connections = append(newlp.connections, make([]*conn, len(newlp.connections))...)
-				}
-				newlp.connections[index] = c
-				return newlp.loopOpen(c)
-			}
-			return err
-		})
+		newlp.poller.Trigger(newlp.addread, c)
 	}
 
 	return nil
 }
 
 func (lp *eventloop) loopOpen(c *conn) error {
-	c.opened = connStateOk
-	c.localAddr = lp.svr.ln.lnaddr
-	c.remoteAddr = netpoll.SockaddrToTCPOrUnixAddr(c.sa)
-	out, action := lp.eventHandler.OnOpened(c)
-	if lp.svr.opts.TCPKeepAlive > 0 {
-		if _, ok := lp.svr.ln.ln.(*net.TCPListener); ok {
-			_ = netpoll.SetKeepAlive(c.fd, int(lp.svr.opts.TCPKeepAlive/time.Second))
-		}
+	if c.isClient {
+		return lp.loopOpenClient(c)
 	}
+	c.state = connStateOk
+	c.localAddr = lp.svr.ln.lnaddr
+	c.remoteAddr = socket.SockaddrToTCPOrUnixAddr(c.sa)
+	out, action := lp.eventHandler.OnOpened(c)
 	if out != nil {
 		c.write(out)
 	}
 	return lp.handleAction(c, action)
 }
 
-func (lp *eventloop) loopIn(c *conn) error {
+func (lp *eventloop) loopIn(c *conn) (err error) {
 
-	n, err := unix.Read(c.fd, lp.packet)
-	if n == 0 || err != nil {
-		if err == unix.EAGAIN {
-			return nil
+	if err = c.readfd(); err == nil {
+		for inFrame := c.readframe(); inFrame != nil && c.state == connStateOk; inFrame = c.readframe() {
+			switch lp.eventHandler.React(inFrame, c) {
+			case Close:
+				c.state = connStateCloseReady
+				return c.loopCloseConn(err)
+			case Shutdown:
+				return errors.ErrEngineShutdown
+			}
+
 		}
-		c.opened = connStateCloseReady
-		return lp.loopCloseConn(c, err)
 	}
 
-	c.inboundBufferWrite(lp.packet[:n])
-
-	for inFrame := c.readframe(); inFrame != nil && c.opened == connStateOk; inFrame = c.readframe() {
-		switch lp.eventHandler.React(inFrame, c) {
-		case Close:
-			c.opened = connStateCloseReady
-			return lp.loopCloseConn(c, nil)
-		case Shutdown:
-			return ErrServerShutdown
-		}
-
-	}
 	return nil
 }
 
-func (lp *eventloop) loopCloseConn(c *conn, err error) error {
-	if atomic.CompareAndSwapInt32(&c.opened, connStateCloseReady, connStateCloseLazyout) {
-		c.loop.eventHandler.OnClosed(c, err)
-
-		c.loop.connections[c.fd/lp.svr.subLoopGroup.len()] = nil
-		lp.lazyChan <- c //进行最后的输出
-	}
-	return nil
-}
-
-func (lp *eventloop) loopWake(c *conn) error {
-
-	if co := lp.connections[c.fd/lp.svr.subLoopGroup.len()]; co != c {
+func (lp *eventloop) loopWake(i interface{}) error {
+	c := i.(*conn)
+	if co := lp.svr.connections[c.fd]; co != c {
 		return nil // ignore stale wakes.
 	}
 
@@ -153,28 +130,37 @@ func (lp *eventloop) loopWake(c *conn) error {
 	return lp.handleAction(c, action)
 }
 
-func (lp *eventloop) loopTicker() {
+func (el *eventloop) loopTicker() {
+	if el == nil {
+		return
+	}
 	var (
-		delay time.Duration
-		open  bool
+		action Action
+		delay  time.Duration
+		timer  *time.Timer
 	)
-	for {
-		if err := lp.poller.Trigger(func() (err error) {
-			delay, action := lp.eventHandler.Tick()
-			lp.svr.ticktock <- delay
-			switch action {
-			case None:
-			case Shutdown:
-				err = ErrServerShutdown
-			}
-			return
-		}); err != nil {
-			break
+	defer func() {
+		if timer != nil {
+			timer.Stop()
 		}
-		if delay, open = <-lp.svr.ticktock; open {
-			time.Sleep(delay)
+	}()
+	for {
+		delay, action = el.eventHandler.Tick()
+		switch action {
+		case None:
+		case Shutdown:
+			el.svr.close <- true
+		}
+		if timer == nil {
+			timer = time.NewTimer(delay)
 		} else {
-			break
+			timer.Reset(delay)
+		}
+		select {
+		case <-el.svr.close:
+			el.svr.close <- true
+			return
+		case <-timer.C:
 		}
 	}
 }
@@ -184,10 +170,10 @@ func (lp *eventloop) handleAction(c *conn, action Action) error {
 	case None:
 		return nil
 	case Close:
-		c.opened = connStateCloseReady
-		return lp.loopCloseConn(c, nil)
+		c.state = connStateCloseReady
+		return c.loopCloseConn(nil)
 	case Shutdown:
-		return ErrServerShutdown
+		return errors.ErrEngineShutdown
 	default:
 		return nil
 	}
@@ -203,8 +189,37 @@ func (lp *eventloop) loopUDPIn(fd int) error {
 
 	switch action {
 	case Shutdown:
-		return ErrServerShutdown
+		return errors.ErrEngineShutdown
 	}
 	c.releaseUDP()
 	return nil
+}
+
+func (el *eventloop) addread(i interface{}) (err error) {
+	c := i.(*conn)
+	el.svr.connectionsLock.Lock()
+	for c.fd >= len(el.svr.connections) {
+		el.svr.connections = append(el.svr.connections, make([]*conn, len(el.svr.connections))...)
+	}
+	el.svr.connectionsLock.Unlock()
+	el.svr.connections[c.fd] = c
+	if c.pollAttachment == nil { // UDP socket
+		c.pollAttachment = netpoll.GetPollAttachment()
+		c.pollAttachment.FD = c.fd
+		c.pollAttachment.Callback = el.handleEvent
+		if err := el.poller.AddRead(c.pollAttachment); err != nil {
+			_ = unix.Close(c.fd)
+			c.releaseUDP()
+			return err
+		}
+		el.udpSockets[c.fd] = c
+		return nil
+	}
+	if err = el.poller.AddRead(c.pollAttachment); err == nil {
+		err = socket.SetKeepAlivePeriod(c.fd, int(el.svr.opts.TCPKeepAlive.Seconds()))
+		return el.loopOpen(c)
+	} else {
+		el.svr.connections[c.fd] = nil
+	}
+	return err
 }

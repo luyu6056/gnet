@@ -3,30 +3,30 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//go:build windows
 // +build windows
 
 package gnet
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"runtime/debug"
 	"sync/atomic"
 	"time"
 
-	"github.com/luyu6056/tls"
+	"github.com/luyu6056/gnet/pkg/errors"
 )
 
 type eventloop struct {
-	ch                  chan interface{}  // command channel
-	idx                 int               // loop index
-	svr                 *server           // server in loop
-	codec               ICodec            // codec for TCP
-	connections         map[*stdConn]bool // track all the sockets bound to this loop
-	eventHandler        EventHandler      // user eventHandler
-	outbufchan, outChan chan *out
-	outclose            chan bool
+	ch           chan interface{}  // command channel
+	idx          int               // loop index
+	svr          *server           // server in loop
+	codec        ICodec            // codec for TCP
+	connections  map[*stdConn]bool // track all the sockets bound to this loop
+	eventHandler EventHandler      // user eventHandler
+	outChan      chan out
+	outclose     chan bool
 }
 
 func (el *eventloop) loopRun() {
@@ -66,8 +66,12 @@ func (el *eventloop) loopRun() {
 			err = el.loopError(v.c, v.err)
 		case wakeReq:
 			err = el.loopWake(v.c)
+		case tcpClose:
+			el.loopReleaseTcp(v.c, err)
 		case func() error:
 			err = v()
+		case clientdail:
+			err = v.clientMange.loopOpenClient(v.c, el)
 		}
 		if err != nil {
 			return
@@ -79,7 +83,6 @@ func (el *eventloop) loopAccept(c *stdConn) error {
 	el.connections[c] = true
 	c.localAddr = el.svr.ln.lnaddr
 	c.remoteAddr = c.conn.RemoteAddr()
-
 	out, action := el.eventHandler.OnOpened(c)
 	if out != nil {
 		el.eventHandler.PreWrite()
@@ -95,30 +98,33 @@ func (el *eventloop) loopAccept(c *stdConn) error {
 }
 
 func (el *eventloop) loopRead(ti *tcpIn) (err error) {
+
 	c := ti.c
 	c.inboundBufferWrite(ti.buf.Bytes())
 	ti.buf.Reset()
 	msgbufpool.Put(ti.buf)
-	for inFrame := c.readframe(); inFrame != nil; inFrame = c.readframe() {
+	for inFrame := c.readframe(); inFrame != nil && c.state == connStateOk; inFrame = c.readframe() {
 		action := el.eventHandler.React(inFrame, c)
 		switch action {
 		case None:
 		case Close:
+			c.state = connStateCloseReady
 			return el.loopClose(c)
 		case Shutdown:
-			return ErrServerShutdown
+			return errors.ErrEngineShutdown
 		}
 		if err != nil {
 			return el.loopClose(c)
 		}
 	}
-
 	return nil
 }
 
 func (el *eventloop) loopClose(c *stdConn) error {
-	atomic.StoreInt32(&c.done, 1)
-	_ = c.conn.SetReadDeadline(time.Now())
+	if atomic.CompareAndSwapInt32(&c.state, connStateCloseReady, connStateCloseLazyout) {
+		_ = c.conn.SetReadDeadline(time.Now())
+	}
+
 	return nil
 }
 
@@ -169,29 +175,24 @@ func (el *eventloop) loopError(c *stdConn, err error) (e error) {
 	if _, ok := el.connections[c]; ok {
 		delete(el.connections, c)
 		if e = c.conn.Close(); e == nil {
-			switch atomic.LoadInt32(&c.done) {
-			case 0: // read error
-				if err != io.EOF {
-					//log.Printf("socket: %s with err: %v\n", c.remoteAddr.String(), err)
-				}
-			case 1: // closed
-				//log.Printf("socket: %s has been closed by client\n", c.remoteAddr.String())
-			}
+
 			switch el.eventHandler.OnClosed(c, err) {
 			case Shutdown:
 				return errClosing
 			}
-			c.releaseTCP()
+
 		}
 	}
 	return
 }
-
+func (el *eventloop) loopReleaseTcp(c *stdConn, err error) {
+	el.loopError(c, err)
+	c.releaseTCP()
+}
 func (el *eventloop) loopWake(c *stdConn) error {
-	if c.RemoteAddr().Network() == "tcp" {
-		if _, ok := el.connections[c]; !ok {
-			return nil // ignore stale wakes.
-		}
+
+	if _, ok := el.connections[c]; !ok {
+		return nil // ignore stale wakes.
 	}
 
 	action := el.eventHandler.React(nil, c)
@@ -206,7 +207,7 @@ func (el *eventloop) handleAction(c *stdConn, action Action) error {
 	case Close:
 		return el.loopClose(c)
 	case Shutdown:
-		return ErrServerShutdown
+		return errors.ErrEngineShutdown
 	default:
 		return nil
 	}
@@ -220,42 +221,4 @@ func (el *eventloop) loopReadUDP(c *stdConn) error {
 	}
 	c.releaseUDP()
 	return nil
-}
-
-type out struct {
-	c *stdConn
-	b tls.MsgBuffer
-}
-
-func (el *eventloop) loopOut(bufnum int) {
-	if bufnum == 0 {
-		bufnum = 512
-	}
-	el.outbufchan = make(chan *out, bufnum)
-	el.outChan = make(chan *out, bufnum)
-	el.outclose = make(chan bool, 1)
-	for i := len(el.outbufchan); i < cap(el.outbufchan); i++ {
-		el.outbufchan <- &out{}
-	}
-
-	go func() { //单个gorutinue 减少unix.EAGAIN cpu消耗
-
-		for {
-
-			select {
-			case o := <-el.outChan:
-				if o.c.tlsconn != nil {
-					o.c.tlsconn.Write(o.b.Bytes())
-					o.c.conn.Write(o.c.outboundBuffer.Bytes())
-					o.c.outboundBuffer.Reset()
-				} else {
-					o.c.conn.Write(o.b.Bytes())
-				}
-				o.b.Reset()
-				el.outbufchan <- o
-			case <-el.outclose:
-				return
-			}
-		}
-	}()
 }

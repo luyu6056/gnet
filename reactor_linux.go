@@ -9,9 +9,7 @@ package gnet
 func (svr *server) activateMainReactor() {
 	defer svr.signalShutdown()
 
-	sniffError(svr.mainLoop.poller.Polling(func(fd int, ev uint32) error {
-		return svr.acceptNewConnection(fd)
-	}))
+	sniffError(svr.mainLoop.startPolling(svr.activateMainReactorCallback))
 }
 
 func (svr *server) activateSubReactor(lp *eventloop) {
@@ -26,9 +24,11 @@ func (svr *server) activateSubReactor(lp *eventloop) {
 		go lp.loopTicker()
 	}
 
-	sniffError(lp.poller.Polling(func(fd int, ev uint32) error {
-		if c := lp.connections[fd/lp.svr.subLoopGroup.len()]; c != nil && c.opened == connStateOk {
-			return lp.loopIn(c)
+	sniffError(lp.startPolling(func(fd int) error {
+		if fd < len(lp.svr.connections) {
+			if c := lp.svr.connections[fd]; c != nil && c.state == connStateOk {
+				return lp.loopIn(c)
+			}
 		}
 		return nil
 	}))

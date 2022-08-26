@@ -22,7 +22,7 @@ func (svr *server) activateSubReactor(lp *eventloop) {
 	}
 
 	sniffError(lp.poller.Polling(func(fd int, filter int16) error {
-		if c := lp.connections[fd/lp.svr.subLoopGroup.len()]; c != nil && c.opened == connStateOk {
+		if c := lp.connections[fd/lp.svr.subLoopGroup.len()]; c != nil && c.state == connStateOk {
 			return lp.loopIn(c)
 		}
 		return nil

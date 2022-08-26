@@ -4,6 +4,8 @@
 
 package gnet
 
+import "sync"
+
 // LoadBalance sets the load balancing method.
 //type LoadBalance int
 //
@@ -32,6 +34,7 @@ type (
 		nextLoopIndex int
 		eventLoops    []*eventloop
 		size          int
+		lock          sync.Mutex
 	}
 )
 
@@ -43,11 +46,13 @@ func (g *eventLoopGroup) register(el *eventloop) {
 // Built-in load-balance algorithm is Round-Robin.
 // TODO: support more load-balance algorithms.
 func (g *eventLoopGroup) next() (el *eventloop) {
+	g.lock.Lock()
 	el = g.eventLoops[g.nextLoopIndex]
 	g.nextLoopIndex++
 	if g.nextLoopIndex >= g.size {
 		g.nextLoopIndex = 0
 	}
+	g.lock.Unlock()
 	return
 }
 func (g *eventLoopGroup) getbyfd(fd int) (el *eventloop) {

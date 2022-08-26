@@ -39,11 +39,11 @@ type Options struct {
 	// ICodec encodes and decodes TCP stream.
 	Codec ICodec
 
-	MultiOut, Isblock bool
-
-	OutbufNum int
+	Isblock bool
 
 	Tlsconfig *tls.Config
+
+	TCPNoDelay bool
 }
 
 // WithOptions sets up all options.
@@ -95,13 +95,6 @@ func WithBlock(block bool) Option {
 	}
 }
 
-//设置缓冲buf数量，减少能减轻内存占用，但是会阻塞
-func WithOutbuf(n int) Option {
-	return func(opts *Options) {
-		opts.OutbufNum = n
-	}
-}
-
 //开启tls模式
 func WithTls(tlsconfig *tls.Config) Option {
 	return func(opts *Options) {
@@ -109,9 +102,8 @@ func WithTls(tlsconfig *tls.Config) Option {
 	}
 }
 
-//true的时候开启与lp数量相等的out gorutine，小文件如hello word在6核i7能达到50万qps，跑测试用。默认false单核能达到10万qps输出，足以撑爆外网带宽，生产环境不建议开启
-func WithMultiOut(b bool) Option {
+func WithTCPNoDelay(b bool) Option {
 	return func(opts *Options) {
-		opts.MultiOut = b
+		opts.TCPNoDelay = b
 	}
 }

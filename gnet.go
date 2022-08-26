@@ -106,7 +106,10 @@ type Conn interface {
 
 	UpgradeTls(config *tls.Config) error
 
-	WriteNoCodec(buf []byte)
+	WriteNoCodec(buf []byte) error
+
+	//阻塞并等待所有缓冲区输出,与AsyncWrite相反
+	FlushWrite(buf []byte, noCodec ...bool)
 }
 
 type (
@@ -135,7 +138,7 @@ type (
 		// Invoke c.Read() or c.ReadN(n) within the parameter c to read incoming data from client/connection.
 		// Use the out return value to write data to the client/connection.
 		React(frame []byte, c Conn) (action Action)
-
+		//React1(frame []byte, c Conn)(data []byte ,action Action)
 		// Tick fires immediately after the server starts and will fire again
 		// following the duration specified by the delay return value.
 		Tick() (delay time.Duration, action Action)
@@ -202,6 +205,9 @@ func Serve(eventHandler EventHandler, addr string, opts ...Option) error {
 	return serve(eventHandler, addr, initOptions(opts...))
 }
 
+func Client(eventHandler EventHandler, opts ...Option) *ClientManage {
+	return client(eventHandler, initOptions(opts...))
+}
 func parseAddr(addr string) (network, address string) {
 	network = "tcp"
 	address = addr
@@ -220,3 +226,5 @@ func sniffError(err error) {
 	}
 
 }
+
+type AsyncCallback func(c Conn) error
