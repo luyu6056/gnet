@@ -75,7 +75,7 @@ func newTCPConn(conn net.Conn, lp *eventloop) *stdConn {
 		remoteAddr:     conn.RemoteAddr(),
 		inboundBuffer:  msgbufpool.Get().(*tls.MsgBuffer),
 		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
-		flushWait:      make(chan int),
+		flushWait:      make(chan int,1),
 		state:          connStateOk,
 	}
 	c.inboundBufferWrite = c.inboundBuffer.Write

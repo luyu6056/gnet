@@ -62,7 +62,7 @@ func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
 		codec:          lp.codec,
 		inboundBuffer:  msgbufpool.Get().(*tls.MsgBuffer),
 		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
-		flushWait:      make(chan int),
+		flushWait:      make(chan int,1),
 	}
 	c.readfd = c.tcpread
 	c.readframe = c.read
