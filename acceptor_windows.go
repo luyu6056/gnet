@@ -9,8 +9,9 @@
 package gnet
 
 import (
-	"github.com/luyu6056/tls"
 	"time"
+
+	"github.com/luyu6056/tls"
 )
 
 func (svr *server) listenerRun() {

@@ -10,6 +10,7 @@ package gnet
 import (
 	"fmt"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/luyu6056/gnet/pkg/errors"
@@ -55,10 +56,12 @@ func (lp *eventloop) loopRun() {
 
 func (lp *eventloop) loopAccept(fd int) error {
 	if fd == lp.svr.ln.fd {
+
 		if lp.svr.ln.pconn != nil {
 			return lp.loopUDPIn(fd)
 		}
 		nfd, sa, err := unix.Accept(fd)
+
 		if err != nil {
 			if err == unix.EAGAIN {
 				return nil
@@ -75,6 +78,7 @@ func (lp *eventloop) loopAccept(fd int) error {
 				return err
 			}
 		}
+		//newlp:=lp
 		newlp := lp.svr.subLoopGroup.getbyfd(nfd)
 		c := newTCPConn(nfd, newlp, sa)
 		if lp.svr.tlsconfig != nil {
@@ -82,6 +86,7 @@ func (lp *eventloop) loopAccept(fd int) error {
 				return err
 			}
 		}
+
 		newlp.poller.Trigger(newlp.addread, c)
 	}
 
@@ -89,6 +94,7 @@ func (lp *eventloop) loopAccept(fd int) error {
 }
 
 func (lp *eventloop) loopOpen(c *conn) error {
+
 	if c.isClient {
 		return lp.loopOpenClient(c)
 	}
@@ -103,13 +109,21 @@ func (lp *eventloop) loopOpen(c *conn) error {
 }
 
 func (lp *eventloop) loopIn(c *conn) (err error) {
-
-	if err = c.readfd(); err == nil {
+	defer func() {
+		if c.inboundBuffer.Len() == 0 {
+			msgbufpool.Put(c.inboundBuffer)
+			c.inboundBuffer = nil
+		}
+	}()
+	if err = c.readfdF(); err == nil {
 		for inFrame := c.readframe(); inFrame != nil && c.state == connStateOk; inFrame = c.readframe() {
 			switch lp.eventHandler.React(inFrame, c) {
 			case Close:
-				c.state = connStateCloseReady
-				return c.loopCloseConn(err)
+
+				if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
+					c.loopCloseConn(err)
+				}
+				return err
 			case Shutdown:
 				return errors.ErrEngineShutdown
 			}
@@ -144,6 +158,7 @@ func (el *eventloop) loopTicker() {
 			timer.Stop()
 		}
 	}()
+
 	for {
 		delay, action = el.eventHandler.Tick()
 		switch action {
@@ -170,8 +185,10 @@ func (lp *eventloop) handleAction(c *conn, action Action) error {
 	case None:
 		return nil
 	case Close:
-		c.state = connStateCloseReady
-		return c.loopCloseConn(nil)
+		if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
+			c.loopCloseConn(nil)
+		}
+		return nil
 	case Shutdown:
 		return errors.ErrEngineShutdown
 	default:
@@ -215,6 +232,7 @@ func (el *eventloop) addread(i interface{}) (err error) {
 		el.udpSockets[c.fd] = c
 		return nil
 	}
+
 	if err = el.poller.AddRead(c.pollAttachment); err == nil {
 		err = socket.SetKeepAlivePeriod(c.fd, int(el.svr.opts.TCPKeepAlive.Seconds()))
 		return el.loopOpen(c)

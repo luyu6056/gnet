@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build ((linux && arm64) || (linux && riscv64))
+//go:build ((linux && arm64) || (linux && riscv64)) && poll_opt
 // +build linux,arm64 linux,riscv64
 // +build
 

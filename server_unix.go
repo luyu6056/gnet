@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -78,8 +79,10 @@ func (svr *server) startLoops() {
 func (svr *server) closeConns(_ interface{}) error {
 	for _, c := range svr.connections {
 		if c != nil {
-			c.state = connStateCloseReady
-			sniffError(c.loopCloseConn(errors.ErrEngineShutdown))
+			if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
+				sniffError(c.loopCloseConn(errors.ErrEngineShutdown))
+			}
+
 		}
 	}
 	return nil
@@ -131,6 +134,7 @@ func (svr *server) activateLoops(numLoops int) error {
 			return err
 		}
 	}
+
 	svr.subLoopGroupSize = svr.subLoopGroup.len()
 	// Start loops in background
 	svr.startLoops()
@@ -332,7 +336,6 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 		Close: func() {
 			svr.close <- true
 		},
-
 	}
 	if svr.opts.ReusePort {
 		err := unix.SetsockoptInt(svr.ln.fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)

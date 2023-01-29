@@ -3,6 +3,7 @@
 package gnet
 
 import (
+
 	"time"
 
 	"github.com/luyu6056/gnet/pkg/pool/byteslice"
@@ -173,9 +174,7 @@ func (c *conn) lazywrite() {
 			unix.Close(c.fd)
 
 			c.loop.poller.Trigger(func(i interface{}) (err error) {
-				c.loop.poller.Delete(c.fd)
 				c.releaseTCP()
-
 				return nil
 			}, nil)
 

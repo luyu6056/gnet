@@ -60,13 +60,13 @@ func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
 		sa:             sa,
 		loop:           lp,
 		codec:          lp.codec,
-		inboundBuffer:  msgbufpool.Get().(*tls.MsgBuffer),
+		inboundBuffer:  nil,
 		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
 		flushWait:      make(chan int,1),
 	}
 	c.readfd = c.tcpread
 	c.readframe = c.read
-	c.inboundBuffer.Reset()
+	//c.inboundBuffer.Reset()
 	c.outboundBuffer.Reset()
 	c.pollAttachment = new(netpoll.PollAttachment)
 	c.pollAttachment.FD, c.pollAttachment.Callback = fd, c.handleEvents
@@ -76,15 +76,28 @@ func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
 func (c *conn) releaseTCP() {
 	c.sa = nil
 	c.ctx = nil
-	c.inboundBuffer.Reset()
-	c.outboundBuffer.Reset()
-	msgbufpool.Put(c.inboundBuffer)
-	msgbufpool.Put(c.outboundBuffer)
-	c.inboundBuffer = nil
-	c.outboundBuffer = nil
+	if c.inboundBuffer != nil {
+		c.inboundBuffer.Reset()
+		msgbufpool.Put(c.inboundBuffer)
+		c.inboundBuffer = nil
+	}
+	if c.outboundBuffer != nil {
+		c.outboundBuffer.Reset()
+		msgbufpool.Put(c.outboundBuffer)
+		c.outboundBuffer = nil
+	}
+
 	c.loop.svr.connections[c.fd] = nil
 	//netpoll.PutPollAttachment(c.pollAttachment)
 	//c.pollAttachment = nil
+}
+
+//优化buffer
+func (c *conn) readfdF() error {
+	if c.inboundBuffer == nil {
+		c.inboundBuffer = msgbufpool.Get().(*tls.MsgBuffer)
+	}
+	return c.readfd()
 }
 
 var conn_m sync.Map
@@ -109,16 +122,17 @@ func (c *conn) releaseUDP() {
 }
 func (c *conn) tcpread() error {
 	n, err := unix.Read(c.fd, c.inboundBuffer.Make(4096))
+	c.inboundBuffer.Truncate(c.inboundBuffer.Len() - 4096 + n)
 	if n == 0 || err != nil {
 		if err == unix.EAGAIN {
 			return nil
 		}
 		if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
-			c.loopCloseConn(err)
+			 c.loopCloseConn(err)
 		}
-		return nil
+		return err
 	}
-	c.inboundBuffer.Truncate(c.inboundBuffer.Len() - 4096 + n)
+
 	return nil
 }
 func (c *conn) tlsread() (frame []byte) {
@@ -235,7 +249,7 @@ func (c *conn) ErrClose(err error) {
 	}
 }
 func (c *conn) UpgradeTls(config *tls.Config) (err error) {
-	c.tlsconn, err = tls.Server(c, c.inboundBuffer, c.outboundBuffer, config.Clone())
+	c.tlsconn, err = tls.Server(c, &c.inboundBuffer, &c.outboundBuffer, config.Clone())
 	c.readfd = func() error {
 		n, err := unix.Read(c.fd, c.loop.packet)
 		if n == 0 || err != nil {
@@ -243,7 +257,7 @@ func (c *conn) UpgradeTls(config *tls.Config) (err error) {
 				return nil
 			}
 			if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
-				c.loopCloseConn(err)
+				_ = c.loop.poller.Trigger(c.loopCloseConn, err)
 			}
 			return nil
 		}
@@ -252,7 +266,7 @@ func (c *conn) UpgradeTls(config *tls.Config) (err error) {
 	}
 	c.readframe = c.tlsread
 	//很有可能握手包在UpgradeTls之前发过来了，这里把inboundBuffer剩余数据当做握手数据处理
-	if c.inboundBuffer.Len() > 0 {
+	if c.inboundBuffer!=nil && c.inboundBuffer.Len() > 0 {
 		c.tlsconn.RawWrite(c.inboundBuffer.Bytes())
 		c.inboundBuffer.Reset()
 		if err := c.tlsconn.Handshake(); err != nil {
@@ -292,6 +306,7 @@ out:
 }
 func (c *conn) loopCloseConn(i interface{}) error {
 	if atomic.CompareAndSwapInt32(&c.state, connStateCloseReady, connStateCloseLazyout) {
+		c.loop.poller.Delete(c.fd)
 		switch i.(type) {
 		case error:
 			c.loop.eventHandler.OnClosed(c, i.(error))

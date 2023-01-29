@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luyu6056/gnet/pkg/errors"
+	"github.com/luyu6056/tls"
 )
 
 type eventloop struct {
@@ -100,9 +101,18 @@ func (el *eventloop) loopAccept(c *stdConn) error {
 func (el *eventloop) loopRead(ti *tcpIn) (err error) {
 
 	c := ti.c
+	if c.inboundBuffer == nil {
+		c.inboundBuffer = msgbufpool.Get().(*tls.MsgBuffer)
+	}
 	c.inboundBufferWrite(ti.buf.Bytes())
 	ti.buf.Reset()
 	msgbufpool.Put(ti.buf)
+	defer func() {
+		if c.inboundBuffer.Len() == 0 {
+			msgbufpool.Put(c.inboundBuffer)
+			c.inboundBuffer = nil
+		}
+	}()
 	for inFrame := c.readframe(); inFrame != nil && c.state == connStateOk; inFrame = c.readframe() {
 		action := el.eventHandler.React(inFrame, c)
 		switch action {

@@ -4,7 +4,7 @@
 package gnet
 
 import "github.com/luyu6056/gnet/pkg/pool/byteslice"
-
+import "time"
 type out struct {
 	conn *stdConn
 	data []byte
@@ -24,9 +24,11 @@ func (el *eventloop) loopOut() {
 				if c.outboundBuffer != nil {
 					if c.tlsconn != nil {
 						c.tlsconn.Write(data)
+						c.conn.SetWriteDeadline(time.Now().Add(time.Second))
 						c.conn.Write(c.outboundBuffer.Bytes())
 						c.outboundBuffer.Reset()
 					} else {
+						c.conn.SetWriteDeadline(time.Now().Add(time.Second))
 						c.conn.Write(data)
 					}
 					for i := c.flushWaitNum; i > 0; i-- {

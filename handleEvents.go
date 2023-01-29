@@ -6,8 +6,8 @@
 
 package gnet
 
-func (lp *eventloop) handleEvent(fd int) error {
 
+func (lp *eventloop) handleEvent(fd int) error {
 	if fd < len(lp.svr.connections) {
 		if c := lp.svr.connections[fd]; c != nil && c.state == connStateOk {
 			return lp.loopIn(c)
@@ -16,7 +16,9 @@ func (lp *eventloop) handleEvent(fd int) error {
 	return lp.loopAccept(fd)
 }
 
+
 func (c *conn) handleEvents(fd int) error {
+
 	if c.state == connStateOk {
 		return c.loop.loopIn(c)
 	}

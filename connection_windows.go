@@ -73,12 +73,14 @@ func newTCPConn(conn net.Conn, lp *eventloop) *stdConn {
 		codec:          lp.codec,
 		localAddr:      conn.LocalAddr(),
 		remoteAddr:     conn.RemoteAddr(),
-		inboundBuffer:  msgbufpool.Get().(*tls.MsgBuffer),
+		inboundBuffer:  nil,
 		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
-		flushWait:      make(chan int,1),
+		flushWait:      make(chan int),
 		state:          connStateOk,
 	}
-	c.inboundBufferWrite = c.inboundBuffer.Write
+	c.inboundBufferWrite =  func(b []byte) (int, error){
+		return c.inboundBuffer.Write(b)
+	}
 	c.readframe = c.read
 	return c
 }
@@ -99,9 +101,13 @@ func newUDPConn(lp *eventloop, localAddr, remoteAddr net.Addr) *stdConn {
 func (c *stdConn) releaseUDP() {
 	c.ctx = nil
 	c.localAddr = nil
-	c.inboundBuffer.Reset()
-	msgbufpool.Put(c.inboundBuffer)
-	c.inboundBuffer = nil
+	if c.inboundBuffer!=nil{
+		c.inboundBuffer.Reset()
+		msgbufpool.Put(c.inboundBuffer)
+		c.inboundBuffer = nil
+	}
+
+
 }
 func (c *stdConn) tlsread() (frame []byte) {
 	var err error
@@ -224,11 +230,11 @@ func (c *stdConn) Close() error {
 func (c *stdConn) UpgradeTls(config *tls.Config) (err error) {
 	c.loop.ch <- func() error {
 
-		c.tlsconn, err = tls.Server(c, c.inboundBuffer, c.outboundBuffer, config.Clone())
+		c.tlsconn, err = tls.Server(c, &c.inboundBuffer, &c.outboundBuffer, config.Clone())
 		c.inboundBufferWrite = c.tlsconn.RawWrite
 		c.readframe = c.tlsread
 		//很有可能握手包在UpgradeTls之前发过来了，这里把inboundBuffer剩余数据当做握手数据处理
-		if c.inboundBuffer.Len() > 0 {
+		if c.inboundBuffer!=nil && c.inboundBuffer.Len() > 0 {
 			c.tlsconn.RawWrite(c.inboundBuffer.Bytes())
 			c.inboundBuffer.Reset()
 			if err := c.tlsconn.Handshake(); err != nil {
