@@ -10,7 +10,6 @@ package gnet
 import (
 	"fmt"
 	"runtime/debug"
-	"sync/atomic"
 	"time"
 
 	"github.com/luyu6056/gnet/pkg/errors"
@@ -28,8 +27,6 @@ type eventloop struct {
 	packet         []byte          // read packet buffer
 	poller         *netpoll.Poller // epoll or kqueue
 	eventHandler   EventHandler    // user eventHandler
-	outChan        chan out
-	lazyChan       chan *conn
 	outclose       chan bool
 	udpSockets     map[int]*conn
 	pollAttachment *netpoll.PollAttachment
@@ -117,12 +114,10 @@ func (lp *eventloop) loopIn(c *conn) (err error) {
 	}()
 	if err = c.readfdF(); err == nil {
 		for inFrame := c.readframe(); inFrame != nil && c.state == connStateOk; inFrame = c.readframe() {
+
 			switch lp.eventHandler.React(inFrame, c) {
 			case Close:
-
-				if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
-					c.loopCloseConn(err)
-				}
+				c.loopCloseConn(err)
 				return err
 			case Shutdown:
 				return errors.ErrEngineShutdown
@@ -139,9 +134,7 @@ func (lp *eventloop) loopWake(i interface{}) error {
 	if co := lp.svr.connections[c.fd]; co != c {
 		return nil // ignore stale wakes.
 	}
-
-	action := lp.eventHandler.React(nil, c)
-	return lp.handleAction(c, action)
+	return lp.handleAction(c, lp.eventHandler.React(nil, c))
 }
 
 func (el *eventloop) loopTicker() {
@@ -185,9 +178,9 @@ func (lp *eventloop) handleAction(c *conn, action Action) error {
 	case None:
 		return nil
 	case Close:
-		if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
-			c.loopCloseConn(nil)
-		}
+
+		c.loopCloseConn(nil)
+
 		return nil
 	case Shutdown:
 		return errors.ErrEngineShutdown

@@ -50,64 +50,64 @@ type server struct {
 }
 
 // waitForShutdown waits for a signal to shutdown.
-func (svr *server) waitForShutdown() error {
-	svr.cond.L.Lock()
-	svr.cond.Wait()
-	err := svr.serr
-	svr.cond.L.Unlock()
+func (srv *server) waitForShutdown() error {
+	srv.cond.L.Lock()
+	srv.cond.Wait()
+	err := srv.serr
+	srv.cond.L.Unlock()
 	return err
 }
 
 // signalShutdown signals a shutdown an begins server closing.
-func (svr *server) signalShutdown(err error) {
-	svr.once.Do(func() {
+func (srv *server) signalShutdown(err error) {
+	srv.once.Do(func() {
 
-		svr.cond.L.Lock()
-		svr.serr = err
-		svr.cond.Signal()
-		svr.cond.L.Unlock()
+		srv.cond.L.Lock()
+		srv.serr = err
+		srv.cond.Signal()
+		srv.cond.L.Unlock()
 	})
 	os.Exit(1)
 }
 
-func (svr *server) startListener() {
-	svr.listenerWG.Add(1)
+func (srv *server) startListener() {
+	srv.listenerWG.Add(1)
 	go func() {
-		svr.listenerRun()
-		svr.listenerWG.Done()
+		srv.listenerRun()
+		srv.listenerWG.Done()
 	}()
 }
 
-func (svr *server) startLoops(numLoops int) {
+func (srv *server) startLoops(numLoops int) {
 	for i := 0; i < numLoops; i++ {
 		el := &eventloop{
 			ch:           make(chan interface{}, commandBufferSize),
 			idx:          i,
-			svr:          svr,
-			codec:        svr.codec,
+			srv:          srv,
+			codec:        srv.codec,
 			connections:  make(map[*stdConn]bool),
-			eventHandler: svr.eventHandler,
+			eventHandler: srv.eventHandler,
 		}
-		svr.subLoopGroup.register(el)
+		srv.subLoopGroup.register(el)
 	}
 
-	svr.subLoopGroupSize = svr.subLoopGroup.len()
-	svr.loopWG.Add(svr.subLoopGroupSize)
-	svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
+	srv.subLoopGroupSize = srv.subLoopGroup.len()
+	srv.loopWG.Add(srv.subLoopGroupSize)
+	srv.subLoopGroup.iterate(func(i int, el *eventloop) bool {
 		go el.loopRun()
 		go el.loopOut()
 		return true
 	})
 }
 
-func (svr *server) stop() {
+func (srv *server) stop() {
 
 	// Wait on a signal for shutdown.
-	log.Printf("server is being shutdown with err: %v\n", svr.waitForShutdown())
-	if svr.ln != nil {
+	log.Printf("server is being shutdown with err: %v\n", srv.waitForShutdown())
+	if srv.ln != nil {
 		// Close listener.
-		svr.ln.close()
-		svr.listenerWG.Wait()
+		srv.ln.close()
+		srv.listenerWG.Wait()
 
 	}
 
@@ -144,16 +144,16 @@ func serve(eventHandler EventHandler, addr string, options *Options) (err error)
 		numCPU = runtime.NumCPU()
 	}
 
-	svr := new(server)
-	svr.close = make(chan error, numCPU+1)
-	svr.opts = options
-	svr.tlsconfig = options.Tlsconfig
-	svr.eventHandler = eventHandler
-	svr.ln = &ln
-	svr.subLoopGroup = new(eventLoopGroup)
-	svr.ticktock = make(chan time.Duration, 1)
-	svr.cond = sync.NewCond(&sync.Mutex{})
-	svr.codec = func() ICodec {
+	srv := new(server)
+	srv.close = make(chan error, numCPU+1)
+	srv.opts = options
+	srv.tlsconfig = options.Tlsconfig
+	srv.eventHandler = eventHandler
+	srv.ln = &ln
+	srv.subLoopGroup = new(eventLoopGroup)
+	srv.ticktock = make(chan time.Duration, 1)
+	srv.cond = sync.NewCond(&sync.Mutex{})
+	srv.codec = func() ICodec {
 		if options.Codec == nil {
 			return new(BuiltInFrameCodec)
 		}
@@ -167,24 +167,24 @@ func serve(eventHandler EventHandler, addr string, options *Options) (err error)
 		ReUsePort:    options.ReusePort,
 		TCPKeepAlive: options.TCPKeepAlive,
 		Close: func() {
-			svr.close <- errors.New("close by server.Close()")
+			srv.close <- errors.New("close by server.Close()")
 		},
 	}
 
-	switch svr.eventHandler.OnInitComplete(server) {
+	switch srv.eventHandler.OnInitComplete(server) {
 	case None:
 	case Shutdown:
 		return
 	}
-	go svr.signalHandler()
+	go srv.signalHandler()
 	// Start all loops.
-	svr.startLoops(numCPU)
+	srv.startLoops(numCPU)
 	// Start listener.
-	svr.startListener()
-	svr.stop()
+	srv.startListener()
+	srv.stop()
 	return
 }
-func (svr *server) signalHandler() {
+func (srv *server) signalHandler() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	for {
@@ -192,32 +192,32 @@ func (svr *server) signalHandler() {
 		case sig := <-ch:
 			signal.Stop(ch)
 			// Notify all loops to close.
-			svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
+			srv.subLoopGroup.iterate(func(i int, el *eventloop) bool {
 				el.ch <- errClosing
 				el.outclose <- true
 				return true
 			})
 
 			// Wait on all loops to close.
-			svr.loopWG.Wait()
+			srv.loopWG.Wait()
 
 			// Close all connections.
-			svr.loopWG.Add(svr.subLoopGroupSize)
-			svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
+			srv.loopWG.Add(srv.subLoopGroupSize)
+			srv.subLoopGroup.iterate(func(i int, el *eventloop) bool {
 				el.ch <- errCloseConns
 				return true
 			})
-			svr.loopWG.Wait()
+			srv.loopWG.Wait()
 			// timeout context for shutdown
 			switch sig {
 			case syscall.SIGINT, syscall.SIGTERM:
-				svr.signalShutdown(nil)
+				srv.signalShutdown(nil)
 				return
 
 			}
-		case err := <-svr.close:
+		case err := <-srv.close:
 			signal.Stop(ch)
-			svr.signalShutdown(err)
+			srv.signalShutdown(err)
 			return
 		}
 	}

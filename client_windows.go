@@ -66,10 +66,10 @@ func (srv *ClientManage) loopOpenClient(c *stdConn, el *eventloop) error {
 		el.eventHandler.PreWrite()
 		_, _ = c.conn.Write(out)
 	}
-	if el.svr.opts.TCPKeepAlive > 0 {
+	if el.srv.opts.TCPKeepAlive > 0 {
 		if c, ok := c.conn.(*net.TCPConn); ok {
 			_ = c.SetKeepAlive(true)
-			_ = c.SetKeepAlivePeriod(el.svr.opts.TCPKeepAlive)
+			_ = c.SetKeepAlivePeriod(el.srv.opts.TCPKeepAlive)
 		}
 	}
 	return el.handleAction(c, action)

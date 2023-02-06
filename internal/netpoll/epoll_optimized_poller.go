@@ -113,7 +113,6 @@ func (p *Poller) Trigger(fn queue.TaskFunc, arg interface{}) (err error) {
 	return os.NewSyscallError("write", err)
 }
 
-
 // Polling blocks the current goroutine, waiting for network-events.
 func (p *Poller) Polling() error {
 	el := newEventList(InitPollEventsCap)

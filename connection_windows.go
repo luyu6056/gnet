@@ -60,6 +60,7 @@ type stdConn struct {
 	readframe                     func() []byte
 	flushWait                     chan int
 	flushWaitNum                  int64
+	writetimeout   int
 }
 
 var msgbufpool = sync.Pool{New: func() interface{} {
@@ -77,6 +78,7 @@ func newTCPConn(conn net.Conn, lp *eventloop) *stdConn {
 		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
 		flushWait:      make(chan int),
 		state:          connStateOk,
+		writetimeout: lp.srv.opts.WriteTimeOut,
 	}
 	c.inboundBufferWrite =  func(b []byte) (int, error){
 		return c.inboundBuffer.Write(b)
@@ -206,7 +208,7 @@ func (c *stdConn) WriteNoCodec(buf []byte) error {
 	return nil
 }
 func (c *stdConn) SendTo(buf []byte) (err error) {
-	_, err = c.loop.svr.ln.pconn.WriteTo(buf, c.remoteAddr)
+	_, err = c.loop.srv.ln.pconn.WriteTo(buf, c.remoteAddr)
 	return err
 }
 
@@ -270,4 +272,7 @@ out:
 		}
 	}
 	atomic.AddInt64(&c.flushWaitNum, -1)
+}
+func (c *stdConn)SetWriteDeadline(i int64)  {
+	c.conn.SetWriteDeadline(time.Unix(i,0))
 }

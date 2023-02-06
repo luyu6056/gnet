@@ -18,7 +18,6 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -69,7 +68,6 @@ func (svr *server) startLoops() {
 	svr.subLoopGroup.iterate(func(i int, lp *eventloop) bool {
 		svr.wg.Add(1)
 		go func() {
-			lp.loopOut()
 			lp.loopRun()
 			svr.wg.Done()
 		}()
@@ -79,9 +77,8 @@ func (svr *server) startLoops() {
 func (svr *server) closeConns(_ interface{}) error {
 	for _, c := range svr.connections {
 		if c != nil {
-			if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
-				sniffError(c.loopCloseConn(errors.ErrEngineShutdown))
-			}
+
+			c.loopCloseConnAsync(errors.ErrEngineShutdown)
 
 		}
 	}
@@ -103,7 +100,6 @@ func (svr *server) startReactors() {
 	svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
 		svr.wg.Add(1)
 		go func() {
-			el.loopOut()
 			svr.activateSubReactor(el)
 			svr.wg.Done()
 		}()

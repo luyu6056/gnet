@@ -90,9 +90,7 @@ func client(eventHandler EventHandler, options *Options) *ClientManage {
 			packet:       make([]byte, 0xFFFF),
 			eventHandler: svr.eventHandler,
 		}
-
-		el.outChan = svr.mainLoop.outChan
-		el.lazyChan = svr.mainLoop.lazyChan
+		
 		svr.mainLoop = el
 		svr.subLoopGroup.register(el)
 		svr.startLoops()

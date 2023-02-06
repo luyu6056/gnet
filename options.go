@@ -5,6 +5,7 @@
 package gnet
 
 import (
+	"math"
 	"time"
 
 	"github.com/luyu6056/tls"
@@ -15,6 +16,7 @@ type Option func(opts *Options)
 
 func initOptions(options ...Option) *Options {
 	opts := new(Options)
+	opts.WriteTimeOut = math.MaxInt32
 	for _, option := range options {
 		option(opts)
 	}
@@ -44,6 +46,8 @@ type Options struct {
 	Tlsconfig *tls.Config
 
 	TCPNoDelay bool
+
+	WriteTimeOut int
 }
 
 // WithOptions sets up all options.
@@ -105,5 +109,12 @@ func WithTls(tlsconfig *tls.Config) Option {
 func WithTCPNoDelay(b bool) Option {
 	return func(opts *Options) {
 		opts.TCPNoDelay = b
+	}
+}
+
+//单位秒
+func WithWriteTimeOut(i int) Option {
+	return func(opts *Options) {
+		opts.WriteTimeOut = i
 	}
 }

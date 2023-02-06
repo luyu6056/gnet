@@ -22,7 +22,7 @@ import (
 type eventloop struct {
 	ch           chan interface{}  // command channel
 	idx          int               // loop index
-	svr          *server           // server in loop
+	srv          *server           // server in loop
 	codec        ICodec            // codec for TCP
 	connections  map[*stdConn]bool // track all the sockets bound to this loop
 	eventHandler EventHandler      // user eventHandler
@@ -38,19 +38,19 @@ func (el *eventloop) loopRun() {
 			fmt.Println(e)
 			debug.PrintStack()
 		}
-		if el.idx == 0 && el.svr.opts.Ticker {
-			close(el.svr.ticktock)
+		if el.idx == 0 && el.srv.opts.Ticker {
+			close(el.srv.ticktock)
 		}
 		select {
-		case el.svr.close <- err:
+		case el.srv.close <- err:
 		default:
 		}
 
-		el.svr.loopWG.Done()
+		el.srv.loopWG.Done()
 		el.loopEgress()
-		el.svr.loopWG.Done()
+		el.srv.loopWG.Done()
 	}()
-	if el.idx == 0 && el.svr.opts.Ticker {
+	if el.idx == 0 && el.srv.opts.Ticker {
 		go el.loopTicker()
 	}
 	for v := range el.ch {
@@ -82,17 +82,17 @@ func (el *eventloop) loopRun() {
 
 func (el *eventloop) loopAccept(c *stdConn) error {
 	el.connections[c] = true
-	c.localAddr = el.svr.ln.lnaddr
+	c.localAddr = el.srv.ln.lnaddr
 	c.remoteAddr = c.conn.RemoteAddr()
 	out, action := el.eventHandler.OnOpened(c)
 	if out != nil {
 		el.eventHandler.PreWrite()
 		_, _ = c.conn.Write(out)
 	}
-	if el.svr.opts.TCPKeepAlive > 0 {
+	if el.srv.opts.TCPKeepAlive > 0 {
 		if c, ok := c.conn.(*net.TCPConn); ok {
 			_ = c.SetKeepAlive(true)
-			_ = c.SetKeepAlivePeriod(el.svr.opts.TCPKeepAlive)
+			_ = c.SetKeepAlivePeriod(el.srv.opts.TCPKeepAlive)
 		}
 	}
 	return el.handleAction(c, action)
@@ -166,14 +166,14 @@ func (el *eventloop) loopTicker() {
 	for {
 		el.ch <- func() (err error) {
 			delay, action := el.eventHandler.Tick()
-			el.svr.ticktock <- delay
+			el.srv.ticktock <- delay
 			switch action {
 			case Shutdown:
 				err = errClosing
 			}
 			return
 		}
-		if delay, open = <-el.svr.ticktock; open {
+		if delay, open = <-el.srv.ticktock; open {
 			time.Sleep(delay)
 		} else {
 			break
