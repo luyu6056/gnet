@@ -57,12 +57,6 @@ func WithOptions(options Options) Option {
 	}
 }
 
-// WithMulticore sets up multi-cores with gnet.
-func WithLoopNum(n int) Option {
-	return func(opts *Options) {
-		opts.LoopNum = n
-	}
-}
 
 // WithReusePort sets up SO_REUSEPORT socket option.
 func WithReusePort(reusePort bool) Option {

@@ -106,15 +106,9 @@ func (lp *eventloop) loopOpen(c *conn) error {
 }
 
 func (lp *eventloop) loopIn(c *conn) (err error) {
-	defer func() {
-		if c.inboundBuffer.Len() == 0 {
-			msgbufpool.Put(c.inboundBuffer)
-			c.inboundBuffer = nil
-		}
-	}()
+
 	if err = c.readfdF(); err == nil {
 		for inFrame := c.readframe(); inFrame != nil && c.state == connStateOk; inFrame = c.readframe() {
-
 			switch lp.eventHandler.React(inFrame, c) {
 			case Close:
 				c.loopCloseConn(err)
@@ -122,7 +116,6 @@ func (lp *eventloop) loopIn(c *conn) (err error) {
 			case Shutdown:
 				return errors.ErrEngineShutdown
 			}
-
 		}
 	}
 
@@ -134,7 +127,8 @@ func (lp *eventloop) loopWake(i interface{}) error {
 	if co := lp.svr.connections[c.fd]; co != c {
 		return nil // ignore stale wakes.
 	}
-	return lp.handleAction(c, lp.eventHandler.React(nil, c))
+
+	return lp.handleAction(c,lp.eventHandler.React(nil, c) )
 }
 
 func (el *eventloop) loopTicker() {
@@ -195,9 +189,8 @@ func (lp *eventloop) loopUDPIn(fd int) error {
 		return nil
 	}
 	c := newUDPConn(fd, lp, sa)
-	action := lp.eventHandler.React(lp.packet[:n], c)
 
-	switch action {
+	switch lp.eventHandler.React(lp.packet[:n], c) {
 	case Shutdown:
 		return errors.ErrEngineShutdown
 	}

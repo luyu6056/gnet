@@ -71,7 +71,7 @@ func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
 		sa:             sa,
 		loop:           lp,
 		codec:          lp.codec,
-		inboundBuffer:  nil,
+		inboundBuffer:  msgbufpool.Get().(*tls.MsgBuffer),
 		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
 		flushWait:      make(chan int, 1),
 		writetimeout:   lp.svr.opts.WriteTimeOut,
@@ -79,7 +79,7 @@ func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
 
 	c.readfd = c.tcpread
 	c.readframe = c.read
-	//c.inboundBuffer.Reset()
+	c.inboundBuffer.Reset()
 	c.outboundBuffer.Reset()
 	c.pollAttachment = new(netpoll.PollAttachment)
 	c.pollAttachment.FD, c.pollAttachment.Callback = fd, c.handleEvents
@@ -87,7 +87,8 @@ func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
 }
 
 func (c *conn) releaseTCP() {
-	c.loop.poller.Trigger(func(i interface{}) error {
+
+	 c.loop.poller.Trigger(func(i interface{}) error {
 		if atomic.CompareAndSwapInt32(&c.state, connStateDelete, connStateRelease) {
 
 			if c.inboundBuffer != nil {
@@ -104,9 +105,8 @@ func (c *conn) releaseTCP() {
 			c.loop.svr.connections[c.fd] = nil
 			c.fd = devnummfd
 		}
-
 		return nil
-	}, nil)
+	},nil)
 
 	//netpoll.PutPollAttachment(c.pollAttachment)
 	//c.pollAttachment = nil
@@ -114,9 +114,6 @@ func (c *conn) releaseTCP() {
 
 //优化buffer
 func (c *conn) readfdF() error {
-	if c.inboundBuffer == nil {
-		c.inboundBuffer = msgbufpool.Get().(*tls.MsgBuffer)
-	}
 	return c.readfd()
 }
 
@@ -295,6 +292,7 @@ func (c *conn) Write(buf []byte) (n int, err error) {
 				c.loopCloseConn(err)
 			}
 		}
+		byteslice.Put(data)
 		return nil
 	}, nil)
 	return len(buf), nil
@@ -312,6 +310,7 @@ func (c *conn) AsyncWrite(buf []byte) error {
 					c.loopCloseConn(err)
 				}
 			}
+			byteslice.Put(data)
 			return nil
 		}, nil)
 	} else if err != nil {
@@ -328,6 +327,7 @@ func (c *conn) WriteNoCodec(buf []byte) error {
 				c.loopCloseConn(err)
 			}
 		}
+		byteslice.Put(data)
 		return nil
 	}, nil)
 	return nil
@@ -476,28 +476,29 @@ func (c *conn) lazywrite(i interface{}) error {
 			}
 			c.outboundBuffer.Shift(n)
 		}
+		if atomic.CompareAndSwapInt32(&c.state, connStateClosed, connStateDelete) { //彻底删除close的c
+			if c.tlsconn != nil { //关闭前通知tls关闭
+				c.tlsconn.CloseWrite()
+			}
+			unix.Close(c.fd)
+			for i := c.flushWaitNum; i > 0; i-- {
+				select {
+				case c.flushWait <- 0:
+				default:
+				}
+			}
+			c.releaseTCP()
+		} else {
+			for i := c.flushWaitNum; i > 0; i-- {
+				select {
+				case c.flushWait <- c.outboundBuffer.Len():
+				default:
+				}
+			}
+		}
 	}
 
-	if atomic.CompareAndSwapInt32(&c.state, connStateClosed, connStateDelete) { //彻底删除close的c
-		if c.tlsconn != nil { //关闭前通知tls关闭
-			c.tlsconn.CloseWrite()
-		}
-		unix.Close(c.fd)
-		for i := c.flushWaitNum; i > 0; i-- {
-			select {
-			case c.flushWait <- 0:
-			default:
-			}
-		}
-		c.releaseTCP()
-	} else {
-		for i := c.flushWaitNum; i > 0; i-- {
-			select {
-			case c.flushWait <- c.outboundBuffer.Len():
-			default:
-			}
-		}
-	}
+
 
 	return nil
 }
