@@ -392,6 +392,18 @@ func (svr *server) signalHandler() {
 			if svr.ln != nil {
 				// reload
 				log.Println("signal: reload")
+				for _, c := range svr.connections {
+					if c != nil {
+						_ = c.loop.poller.Trigger(func(i interface{}) error {
+							if c.state==connStateOk {
+								svr.eventHandler.SignalReload(c)
+							}
+							return nil
+						},nil)
+					}
+				}
+
+
 				f, err := svr.ln.ln.(*net.TCPListener).File()
 				var args []string
 				if err == nil {

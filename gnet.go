@@ -144,6 +144,9 @@ type (
 		// Tick fires immediately after the server starts and will fire again
 		// following the duration specified by the delay return value.
 		Tick() (delay time.Duration, action Action)
+
+		//linux下的平滑重启，要求尽快关闭掉conn，收到请求后请主动关闭长连接，必须在关闭掉所有长连接后，程序才会退出
+		SignalReload(c Conn)
 	}
 
 	// EventServer is a built-in implementation of EventHandler which sets up each method with a default implementation,
