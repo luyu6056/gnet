@@ -110,8 +110,6 @@ type Conn interface {
 
 	//阻塞并等待所有缓冲区输出,与AsyncWrite相反
 	FlushWrite(buf []byte, noCodec ...bool)
-
-
 }
 
 type (
@@ -146,7 +144,7 @@ type (
 		Tick() (delay time.Duration, action Action)
 
 		//linux下的平滑重启，要求尽快关闭掉conn，收到请求后请主动关闭长连接，必须在关闭掉所有长连接后，程序才会退出
-		SignalReload(c Conn)
+		SignalClose(c Conn)
 	}
 
 	// EventServer is a built-in implementation of EventHandler which sets up each method with a default implementation,
@@ -191,19 +189,23 @@ func (es *EventServer) React(frame []byte, c Conn) (action Action) {
 func (es *EventServer) Tick() (delay time.Duration, action Action) {
 	return
 }
+func (es *EventServer) SignalClose(c Conn) {
+	return
+}
 
 // Serve starts handling events for the specified addresses.
 //
 // Addresses should use a scheme prefix and be formatted
 // like `tcp://192.168.0.10:9851` or `unix://socket`.
 // Valid network schemes:
-//  tcp   - bind to both IPv4 and IPv6
-//  tcp4  - IPv4
-//  tcp6  - IPv6
-//  udp   - bind to both IPv4 and IPv6
-//  udp4  - IPv4
-//  udp6  - IPv6
-//  unix  - Unix Domain Socket
+//
+//	tcp   - bind to both IPv4 and IPv6
+//	tcp4  - IPv4
+//	tcp6  - IPv6
+//	udp   - bind to both IPv4 and IPv6
+//	udp4  - IPv4
+//	udp6  - IPv6
+//	unix  - Unix Domain Socket
 //
 // The "tcp" network scheme is assumed when one is not specified.
 func Serve(eventHandler EventHandler, addr string, opts ...Option) error {

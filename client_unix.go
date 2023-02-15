@@ -1,3 +1,4 @@
+//go:build linux || darwin || netbsd || freebsd || openbsd || dragonfly
 // +build linux darwin netbsd freebsd openbsd dragonfly
 
 package gnet
@@ -6,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"sync"
 	"syscall"
 
 	"github.com/luyu6056/gnet/internal/netpoll"
@@ -16,7 +18,7 @@ type ClientManage struct {
 	*server
 }
 
-func (svr *ClientManage) Dial(network, addr string) (Conn, error) {
+func (srv *ClientManage) Dial(network, addr string) (Conn, error) {
 
 	if network == "tcp4" {
 		tcpaddr, err := net.ResolveTCPAddr(network, addr)
@@ -27,9 +29,9 @@ func (svr *ClientManage) Dial(network, addr string) (Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		lp := svr.server.subLoopGroup.next()
+		lp := srv.server.subLoopGroup.next()
 		c := newTCPConn(nfd, lp, nil)
-		if svr.opts.TCPNoDelay {
+		if srv.opts.TCPNoDelay {
 			if err := unix.SetsockoptInt(nfd, unix.IPPROTO_TCP, unix.TCP_NODELAY, 1); err != nil {
 				return nil, err
 			}
@@ -39,7 +41,7 @@ func (svr *ClientManage) Dial(network, addr string) (Conn, error) {
 		c.localAddr = &net.TCPAddr{IP: sa.(*syscall.SockaddrInet4).Addr[0:], Port: sa.(*syscall.SockaddrInet4).Port}
 		c.remoteAddr = tcpaddr
 		c.isClient = true
-		_ = lp.svr.mainLoop.poller.Trigger(lp.addread, c)
+		_ = lp.srv.mainLoop.poller.Trigger(lp.addread, c)
 		return c, nil
 	} else {
 
@@ -67,15 +69,15 @@ func (lp *eventloop) loopOpenClient(c *conn) error {
 	return lp.handleAction(c, action)
 }
 func client(eventHandler EventHandler, options *Options) *ClientManage {
-	svr := &server{mainLoop: &eventloop{}}
-	svr.mainLoop.svr = svr
+	srv := &server{mainLoop: &eventloop{}}
+	srv.mainLoop.srv = srv
+	srv.connWg = new(sync.WaitGroup)
+	srv.subLoopGroup = new(eventLoopGroup)
+	srv.eventHandler = eventHandler
 
-	svr.subLoopGroup = new(eventLoopGroup)
-	svr.eventHandler = eventHandler
-	svr.connections = make([]*conn, 256)
-	svr.opts = options
-	svr.ln = &listener{fd: -1}
-	svr.codec = func() ICodec {
+	srv.opts = options
+	srv.ln = &listener{fd: -1}
+	srv.codec = func() ICodec {
 		if options.Codec == nil {
 			return new(BuiltInFrameCodec)
 		}
@@ -84,18 +86,18 @@ func client(eventHandler EventHandler, options *Options) *ClientManage {
 	if p, err := netpoll.OpenPoller(); err == nil {
 		el := &eventloop{
 			idx:          0,
-			svr:          svr,
-			codec:        svr.codec,
+			srv:          srv,
+			codec:        srv.codec,
 			poller:       p,
 			packet:       make([]byte, 0xFFFF),
-			eventHandler: svr.eventHandler,
+			eventHandler: srv.eventHandler,
 		}
-		
-		svr.mainLoop = el
-		svr.subLoopGroup.register(el)
-		svr.startLoops()
+
+		srv.mainLoop = el
+		srv.subLoopGroup.register(el)
+		srv.startLoops()
 	} else {
 		log.Fatalln("无法启动client")
 	}
-	return &ClientManage{svr}
+	return &ClientManage{srv}
 }

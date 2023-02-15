@@ -2,6 +2,7 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//go:build linux
 // +build linux
 
 package gnet
@@ -25,11 +26,14 @@ func (svr *server) activateSubReactor(lp *eventloop) {
 	}
 
 	sniffError(lp.startPolling(func(fd int) error {
-		if fd < len(lp.svr.connections) {
-			if c := lp.svr.connections[fd]; c != nil && c.state == connStateOk {
+
+		if i, ok := lp.srv.connections.Load(fd); ok {
+			c := i.(*conn)
+			if c.state == connStateOk {
 				return lp.loopIn(c)
 			}
 		}
+
 		return nil
 	}))
 }

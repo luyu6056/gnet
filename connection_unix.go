@@ -3,6 +3,7 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//go:build linux || darwin || netbsd || freebsd || openbsd || dragonfly
 // +build linux darwin netbsd freebsd openbsd dragonfly
 
 package gnet
@@ -27,9 +28,8 @@ const (
 	connStateOk         = 2
 	connStateCloseReady = 1
 	connStateNone       = 0
-	connStateClosed     = -2
-	connStateDelete     = -3
-	connStateRelease    = -4
+	connStateClosed     = -1
+	connStateDelete     = -2
 )
 
 var devnummfd = func() int {
@@ -74,7 +74,7 @@ func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
 		inboundBuffer:  msgbufpool.Get().(*tls.MsgBuffer),
 		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
 		flushWait:      make(chan int, 1),
-		writetimeout:   lp.svr.opts.WriteTimeOut,
+		writetimeout:   lp.srv.opts.WriteTimeOut,
 	}
 
 	c.readfd = c.tcpread
@@ -88,8 +88,10 @@ func newTCPConn(fd int, lp *eventloop, sa unix.Sockaddr) *conn {
 
 func (c *conn) releaseTCP() {
 
-	 c.loop.poller.Trigger(func(i interface{}) error {
-		if atomic.CompareAndSwapInt32(&c.state, connStateDelete, connStateRelease) {
+	c.loop.poller.Trigger(func(i interface{}) error {
+		if atomic.CompareAndSwapInt32(&c.state, connStateClosed, connStateDelete) {
+			c.loop.srv.connections.Delete(c.fd)
+			c.loop.poller.Delete(c.fd)
 
 			if c.inboundBuffer != nil {
 				c.inboundBuffer.Reset()
@@ -102,17 +104,18 @@ func (c *conn) releaseTCP() {
 				c.outboundBuffer = nil
 			}
 
-			c.loop.svr.connections[c.fd] = nil
+			c.loop.srv.connWg.Done()
 			c.fd = devnummfd
+
 		}
 		return nil
-	},nil)
+	}, nil)
 
 	//netpoll.PutPollAttachment(c.pollAttachment)
 	//c.pollAttachment = nil
 }
 
-//优化buffer
+// 优化buffer
 func (c *conn) readfdF() error {
 	return c.readfd()
 }
@@ -124,7 +127,7 @@ func newUDPConn(fd int, lp *eventloop, sa unix.Sockaddr) (c *conn) {
 		c = v.(*conn)
 	} else {
 		c = &conn{
-			localAddr:  lp.svr.ln.lnaddr,
+			localAddr:  lp.srv.ln.lnaddr,
 			remoteAddr: socket.SockaddrToUDPAddr(sa),
 		}
 	}
@@ -144,12 +147,9 @@ func (c *conn) tcpread() error {
 		if err == unix.EAGAIN {
 			return nil
 		}
-
 		c.loopCloseConn(err)
-
 		return err
 	}
-
 	return nil
 }
 func (c *conn) tlsread() (frame []byte) {
@@ -190,68 +190,11 @@ func (c *conn) read() []byte {
 	}
 	return frame
 }
-func (c *conn) write(data []byte) (e error) {
+func (c *conn) write(data []byte) {
+	buf := byteslice.Get(len(data))
+	copy(buf, data)
+	c.loop.outChan <- out{c, buf}
 
-	if c.tlsconn != nil {
-		c.tlsconn.Write(data) //这里已经写入outboundBuffer
-		for c.outboundBuffer.Len() > 0 {
-			n, err := unix.Write(c.fd, c.outboundBuffer.PreBytes(sendbufDefault))
-			if err != nil {
-				if err == unix.EAGAIN {
-					c.eagainNum++
-					time.AfterFunc(delay*c.eagainNum, func() {
-						c.loop.poller.Trigger(c.lazywrite, nil)
-					})
-					return nil
-				}
-				return err
-			}
-			c.outboundBuffer.Shift(n)
-		}
-	} else {
-
-		for c.outboundBuffer.Len() > 0 {
-			n, err := unix.Write(c.fd, c.outboundBuffer.PreBytes(sendbufDefault))
-			if err != nil {
-
-				if err == unix.EAGAIN {
-					c.eagainNum++
-					time.AfterFunc(delay*c.eagainNum, func() {
-						c.loop.poller.Trigger(c.lazywrite, nil)
-					})
-					c.outboundBuffer.Write(data)
-					return nil
-				}
-				return err
-			} else {
-				c.eagainNum = 0
-			}
-			c.outboundBuffer.Shift(n)
-		}
-
-		for be, en := 0, sendbufDefault; be < len(data); en = be + sendbufDefault {
-			if en > len(data) {
-				en = len(data)
-			}
-			n, err := unix.Write(c.fd, data[be:en])
-			if err != nil {
-				if err == unix.EAGAIN {
-					c.outboundBuffer.Write(data[be:])
-					c.eagainNum++
-					time.AfterFunc(delay*c.eagainNum, func() {
-						c.loop.poller.Trigger(c.lazywrite, nil)
-					})
-					return nil
-				}
-				return err
-			} else {
-				c.eagainNum = 0
-			}
-			be += n
-		}
-
-	}
-	return nil
 }
 
 func (c *conn) sendTo(buf []byte) {
@@ -282,54 +225,24 @@ func (c *conn) BufferLength() int {
 	return c.inboundBuffer.Len()
 }
 
-//用于直出不编码的出口，tls调用
-func (c *conn) Write(buf []byte) (n int, err error) {
-	data := byteslice.Get(len(buf))
-	copy(data, buf)
-	c.loop.poller.Trigger(func(i interface{}) error {
-		if c.state == connStateOk {
-			if err := c.write(data); err != nil {
-				c.loopCloseConn(err)
-			}
-		}
-		byteslice.Put(data)
-		return nil
-	}, nil)
-	return len(buf), nil
+// 用于直出不编码的出口，tls调用
+func (c *conn) Write(data []byte) (n int, err error) {
+	c.write(data)
+	return len(data), nil
 }
 
 func (c *conn) AsyncWrite(buf []byte) error {
 
 	encodedBuf, err := c.codec.Encode(c, buf)
 	if len(encodedBuf) > 0 {
-		data := byteslice.Get(len(encodedBuf))
-		copy(data, encodedBuf)
-		c.loop.poller.Trigger(func(i interface{}) error {
-			if c.state == connStateOk {
-				if err := c.write(data); err != nil {
-					c.loopCloseConn(err)
-				}
-			}
-			byteslice.Put(data)
-			return nil
-		}, nil)
+		c.write(encodedBuf)
 	} else if err != nil {
 		c.ErrClose(err)
 	}
 	return err
 }
 func (c *conn) WriteNoCodec(buf []byte) error {
-	data := byteslice.Get(len(buf))
-	copy(data, buf)
-	c.loop.poller.Trigger(func(i interface{}) error {
-		if c.state > connStateNone {
-			if err := c.write(data); err != nil {
-				c.loopCloseConn(err)
-			}
-		}
-		byteslice.Put(data)
-		return nil
-	}, nil)
+	c.write(buf)
 	return nil
 }
 func (c *conn) SendTo(buf []byte) error {
@@ -349,7 +262,7 @@ func (c *conn) Close() error {
 	return nil
 }
 func (c *conn) ErrClose(err error) {
-	c.loopCloseConnAsync(err)
+	c.loopCloseConn(err)
 }
 func (c *conn) UpgradeTls(config *tls.Config) (err error) {
 	c.tlsconn, err = tls.Server(c, &c.inboundBuffer, &c.outboundBuffer, config.Clone())
@@ -359,7 +272,7 @@ func (c *conn) UpgradeTls(config *tls.Config) (err error) {
 			if err == unix.EAGAIN {
 				return nil
 			}
-			c.loopCloseConnAsync(err)
+			c.loopCloseConn(err)
 			return nil
 		}
 		c.tlsconn.RawWrite(c.loop.packet[:n])
@@ -406,54 +319,22 @@ out:
 	atomic.AddInt64(&c.flushWaitNum, -1)
 }
 
-//在当前epoll事件中close
-func (c *conn) loopCloseConn(i interface{}) {
-	if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateClosed) {
-		c.lazywrite(nil)
-		c.loop.poller.Delete(c.fd)
-		switch i.(type) {
-		case error:
-			c.loop.eventHandler.OnClosed(c, i.(error))
-		default:
-			c.loop.eventHandler.OnClosed(c, nil)
-		}
-
-	}
-	return
-}
-
-//在下一个epoll事件中进行close
-func (c *conn) loopCloseConnAsync(i interface{}) {
-
+// 在当前epoll事件中close
+func (c *conn) loopCloseConn(err error) {
 	if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
-		_ = c.loop.poller.Trigger(func(i interface{}) error {
-			if atomic.CompareAndSwapInt32(&c.state, connStateCloseReady, connStateClosed) { //再次确认
 
-				c.lazywrite(nil)
-				c.loop.poller.Delete(c.fd)
-				switch i.(type) {
-				case error:
-					c.loop.eventHandler.OnClosed(c, i.(error))
-				default:
-					c.loop.eventHandler.OnClosed(c, nil)
-				}
-
-			}
-			return nil
-		}, i)
+		c.loop.eventHandler.OnClosed(c, err)
+		if c.tlsconn != nil { //关闭前通知tls关闭
+			c.tlsconn.CloseWrite()
+		}
+		c.loop.lazyChan <- c
 	}
-
 	return
 }
 
-const (
-	delay          = time.Millisecond
-	sendbufDefault = 16384 //暂时设置为一个tls包大小吧
-)
+func (c *conn) lazywrite() {
 
-func (c *conn) lazywrite(i interface{}) error {
-
-	if c.state > connStateDelete {
+	if c.state > connStateNone {
 		for c.outboundBuffer.Len() > 0 {
 			n, err := unix.Write(c.fd, c.outboundBuffer.PreBytes(sendbufDefault))
 			if err != nil {
@@ -465,7 +346,7 @@ func (c *conn) lazywrite(i interface{}) error {
 						break
 					}
 					time.AfterFunc(delay*c.eagainNum, func() {
-						c.loop.poller.Trigger(c.lazywrite, nil)
+						c.loop.lazyChan <- c
 					})
 					break
 				}
@@ -476,11 +357,8 @@ func (c *conn) lazywrite(i interface{}) error {
 			}
 			c.outboundBuffer.Shift(n)
 		}
-		if atomic.CompareAndSwapInt32(&c.state, connStateClosed, connStateDelete) { //彻底删除close的c
-			if c.tlsconn != nil { //关闭前通知tls关闭
-				c.tlsconn.CloseWrite()
-			}
-			unix.Close(c.fd)
+		if atomic.CompareAndSwapInt32(&c.state, connStateCloseReady, connStateClosed) { //彻底删除close的c
+
 			for i := c.flushWaitNum; i > 0; i-- {
 				select {
 				case c.flushWait <- 0:
@@ -498,7 +376,4 @@ func (c *conn) lazywrite(i interface{}) error {
 		}
 	}
 
-
-
-	return nil
 }

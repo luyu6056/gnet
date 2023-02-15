@@ -3,6 +3,7 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//go:build linux || darwin || netbsd || freebsd || openbsd || dragonfly
 // +build linux darwin netbsd freebsd openbsd dragonfly
 
 package gnet
@@ -43,118 +44,134 @@ type server struct {
 	Isblock          bool               //允许阻塞
 	tlsconfig        *tls.Config
 	close            chan bool
-	connections      []*conn // loop connections fd -> conn
-	connectionsLock  sync.Mutex
+	connections      sync.Map // loop connections fd -> conn
+	connWg           *sync.WaitGroup
 }
 
 // waitForShutdown waits for a signal to shutdown
-func (svr *server) waitForShutdown() {
-	svr.cond.L.Lock()
-	svr.cond.Wait()
-	svr.cond.L.Unlock()
-	svr.stop()
+func (srv *server) waitForShutdown() {
+	srv.cond.L.Lock()
+	srv.cond.Wait()
+	srv.cond.L.Unlock()
+	srv.stop()
 }
 
 // signalShutdown signals a shutdown an begins server closing
-func (svr *server) signalShutdown() {
-	svr.once.Do(func() {
-		svr.cond.L.Lock()
-		svr.cond.Signal()
-		svr.cond.L.Unlock()
+func (srv *server) signalShutdown() {
+	srv.once.Do(func() {
+		srv.cond.L.Lock()
+		srv.cond.Signal()
+		srv.cond.L.Unlock()
 	})
 }
 
-func (svr *server) startLoops() {
-	svr.subLoopGroup.iterate(func(i int, lp *eventloop) bool {
-		svr.wg.Add(1)
+func (srv *server) startLoops() {
+	srv.subLoopGroup.iterate(func(i int, lp *eventloop) bool {
+		srv.wg.Add(1)
 		go func() {
+			lp.loopOut()
 			lp.loopRun()
-			svr.wg.Done()
+			srv.wg.Done()
 		}()
 		return true
 	})
 }
-func (svr *server) closeConns(_ interface{}) error {
-	for _, c := range svr.connections {
-		if c != nil {
+func (srv *server) closeConns() {
+	srv.connections.Range(func(key, value interface{}) bool {
+		c := value.(*conn)
+		c.loopCloseConn(errors.ErrEngineShutdown)
+		return true
+	})
+	srv.connWg.Wait()
 
-			c.loopCloseConnAsync(errors.ErrEngineShutdown)
+}
+func (srv *server) closeLoops() {
+	select {
+	case srv.close <- true:
+	default:
 
-		}
 	}
-	return nil
-}
-func (svr *server) closeLoops() {
 
-	sniffError(svr.mainLoop.poller.Trigger(svr.closeConns, nil))
-	svr.subLoopGroup.iterate(func(i int, lp *eventloop) bool {
+	srv.closeConns()
+	var wg sync.WaitGroup
+	srv.subLoopGroup.iterate(func(i int, lp *eventloop) bool {
+		wg.Add(1)
+		sniffError(lp.poller.Trigger(func(_ interface{}) error {
+
+			return errors.ErrEngineShutdown
+		}, nil))
 		lp.outclose <- true
-		<-lp.outclose
-		lp.poller.Close()
+		go func() {
+			<-lp.outclose
+			wg.Done()
+		}()
+
 		return true
 	})
-
+	wg.Wait()
 }
 
-func (svr *server) startReactors() {
-	svr.subLoopGroup.iterate(func(i int, el *eventloop) bool {
-		svr.wg.Add(1)
+func (srv *server) startReactors() {
+	srv.subLoopGroup.iterate(func(i int, el *eventloop) bool {
+		srv.wg.Add(1)
 		go func() {
-			svr.activateSubReactor(el)
-			svr.wg.Done()
+			el.loopOut()
+			srv.activateSubReactor(el)
+			srv.wg.Done()
 		}()
 		return true
 	})
 }
 
-func (svr *server) activateLoops(numLoops int) error {
+func (srv *server) activateLoops(numLoops int) error {
 	// Create loops locally and bind the listeners.
 
 	for i := 0; i < numLoops; i++ {
 		if p, err := netpoll.OpenPoller(); err == nil {
 			el := &eventloop{
 				idx:          i,
-				svr:          svr,
-				codec:        svr.codec,
+				srv:          srv,
+				codec:        srv.codec,
 				poller:       p,
 				packet:       make([]byte, 0xFFFF),
-				eventHandler: svr.eventHandler,
+				eventHandler: srv.eventHandler,
 			}
 
 			el.pollAttachment = netpoll.GetPollAttachment()
-			el.pollAttachment.FD = svr.ln.fd
+			el.pollAttachment.FD = srv.ln.fd
 			el.pollAttachment.Callback = el.handleEvent
 			_ = el.poller.AddRead(el.pollAttachment)
-			svr.subLoopGroup.register(el)
+			srv.subLoopGroup.register(el)
 		} else {
 			return err
 		}
 	}
 
-	svr.subLoopGroupSize = svr.subLoopGroup.len()
+	srv.subLoopGroupSize = srv.subLoopGroup.len()
 	// Start loops in background
-	svr.startLoops()
+	srv.startLoops()
 	return nil
 }
 
-func (svr *server) activateReactors(numLoops int) error {
+func (srv *server) activateReactors(numLoops int) error {
 	if p, err := netpoll.OpenPoller(); err == nil {
 		el := &eventloop{
-			idx:    -1,
-			poller: p,
-			svr:    svr,
+			idx:      -1,
+			poller:   p,
+			srv:      srv,
+			outclose: make(chan bool, 1),
 		}
 		el.pollAttachment = netpoll.GetPollAttachment()
-		el.pollAttachment.FD = svr.ln.fd
-		el.pollAttachment.Callback = svr.activateMainReactorCallback
+		el.pollAttachment.FD = srv.ln.fd
+		el.pollAttachment.Callback = srv.activateMainReactorCallback
 		_ = el.poller.AddRead(el.pollAttachment)
-		svr.mainLoop = el
+		srv.mainLoop = el
 		// Start main reactor.
-		svr.wg.Add(1)
+		srv.wg.Add(1)
 		go func() {
 
-			svr.activateMainReactor()
-			svr.wg.Done()
+			srv.activateMainReactor()
+			srv.wg.Done()
 		}()
 	} else {
 		return err
@@ -163,72 +180,68 @@ func (svr *server) activateReactors(numLoops int) error {
 		if p, err := netpoll.OpenPoller(); err == nil {
 			el := &eventloop{
 				idx:          i,
-				svr:          svr,
-				codec:        svr.codec,
+				srv:          srv,
+				codec:        srv.codec,
 				poller:       p,
 				packet:       make([]byte, 0xFFFF),
-				eventHandler: svr.eventHandler,
+				eventHandler: srv.eventHandler,
 			}
 
-			svr.subLoopGroup.register(el)
+			srv.subLoopGroup.register(el)
 		} else {
 			return err
 		}
 	}
-	svr.subLoopGroupSize = svr.subLoopGroup.len()
+	srv.subLoopGroupSize = srv.subLoopGroup.len()
 	// Start sub reactors.
-	svr.startReactors()
+	srv.startReactors()
 
 	return nil
 }
 
-func (svr *server) activateMainReactorCallback(fd int) error {
-	return svr.acceptNewConnection(fd)
+func (srv *server) activateMainReactorCallback(fd int) error {
+	return srv.acceptNewConnection(fd)
 }
 
-func (svr *server) start(numCPU int) error {
-	if svr.opts.ReusePort || svr.ln.pconn != nil {
-		return svr.activateLoops(numCPU)
+func (srv *server) start(numCPU int) error {
+	if srv.opts.ReusePort || srv.ln.pconn != nil {
+		return srv.activateLoops(numCPU)
 	}
-	return svr.activateReactors(numCPU)
+	return srv.activateReactors(numCPU)
 }
 
-func (svr *server) stop() {
-
+func (srv *server) stop() {
+	srv.waitClose()
 	// Close loops and all outstanding connections
-	sniffError(svr.mainLoop.poller.Trigger(svr.closeConns, nil))
+	srv.closeLoops()
 
 	// Wait on all loops to complete reading events
 
 	// Notify all loops to close by closing all listeners
-	svr.subLoopGroup.iterate(func(i int, lp *eventloop) bool {
-		sniffError(lp.poller.Trigger(func(_ interface{}) error {
-			return errors.ErrEngineShutdown
-		}, nil))
-		return true
-	})
-	svr.closeLoops()
-	if svr.mainLoop != nil {
-		sniffError(svr.mainLoop.poller.Trigger(func(_ interface{}) error {
+
+	if srv.mainLoop != nil {
+		sniffError(srv.mainLoop.poller.Trigger(func(_ interface{}) error {
+
 			return errors.ErrEngineShutdown
 		}, nil))
 	}
-	svr.wg.Wait()
+	srv.wg.Wait()
 
-	if svr.mainLoop != nil {
-		sniffError(svr.mainLoop.poller.Close())
-		svr.mainLoop.outclose <- true
-		<-svr.mainLoop.outclose
+	if srv.mainLoop != nil {
+		sniffError(srv.mainLoop.poller.Close())
+		srv.mainLoop.outclose <- true
+
 	}
 }
 
-//tcp平滑重启，开启ReusePort有效，关闭ReusePort则会造成短暂的错误
+// tcp平滑重启，开启ReusePort有效，关闭ReusePort则会造成短暂的错误
 var (
 	reload, graceful, stop *bool
 )
 
 func serve(eventHandler EventHandler, addr string, options *Options) error {
-	svr := new(server)
+	srv := new(server)
+	srv.connWg = new(sync.WaitGroup)
 	var ln listener
 	//efer ln.close()
 
@@ -266,13 +279,20 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 					if err = syscall.Kill(pid, syscall.SIGUSR1); err == nil {
 						log.Println("reload ok")
 						return nil
+					} else {
+						log.Println("server not start")
+						return nil
 					}
+				} else {
+					log.Println("server not start")
+					return nil
 				}
 			}
 		}
 		if graceful != nil && *graceful {
 			f := os.NewFile(3, "")
 			ln.ln, err = net.FileListener(f)
+			f.Close()
 		} else {
 			ln.ln, err = net.Listen(ln.network, ln.addr)
 		}
@@ -285,7 +305,7 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 			}
 			f.WriteString(strconv.Itoa(int(pid)))
 			f.Close()
-			go svr.signalHandler()
+			go srv.signalHandler()
 		}
 
 	}
@@ -305,24 +325,23 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 	if numCPU <= 0 {
 		numCPU = runtime.NumCPU()
 	}
-	svr.close = make(chan bool, 1)
+	srv.close = make(chan bool, 1)
 
-	svr.opts = options
-	svr.tlsconfig = options.Tlsconfig
-	svr.eventHandler = eventHandler
-	svr.ln = &ln
-	svr.subLoopGroup = new(eventLoopGroup)
-	svr.cond = sync.NewCond(&sync.Mutex{})
-	svr.ticktock = make(chan time.Duration, 1)
-	svr.Isblock = options.Isblock
-	svr.codec = func() ICodec {
+	srv.opts = options
+	srv.tlsconfig = options.Tlsconfig
+	srv.eventHandler = eventHandler
+	srv.ln = &ln
+	srv.subLoopGroup = new(eventLoopGroup)
+	srv.cond = sync.NewCond(&sync.Mutex{})
+	srv.ticktock = make(chan time.Duration, 1)
+	srv.Isblock = options.Isblock
+	srv.codec = func() ICodec {
 		if options.Codec == nil {
 			return new(BuiltInFrameCodec)
 		}
 		return options.Codec
 	}()
 
-	svr.connections = make([]*conn, 256)
 	server := Server{
 		Multicore:    numCPU > 1,
 		Addr:         ln.lnaddr,
@@ -330,46 +349,46 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 		ReUsePort:    options.ReusePort,
 		TCPKeepAlive: options.TCPKeepAlive,
 		Close: func() {
-			svr.close <- true
+			srv.close <- true
 		},
 	}
-	if svr.opts.ReusePort {
-		err := unix.SetsockoptInt(svr.ln.fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+	if srv.opts.ReusePort {
+		err := unix.SetsockoptInt(srv.ln.fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 		if err != nil {
 			return err
 		}
 
-		err = unix.SetsockoptInt(svr.ln.fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+		err = unix.SetsockoptInt(srv.ln.fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 		if err != nil {
 			return err
 		}
 	}
-	switch svr.eventHandler.OnInitComplete(server) {
+	switch srv.eventHandler.OnInitComplete(server) {
 	case None:
 	case Shutdown:
 		return nil
 	}
 
-	if err := svr.start(numCPU); err != nil {
-		svr.closeLoops()
+	if err := srv.start(numCPU); err != nil {
+		srv.closeLoops()
 		log.Printf("gnet server is stoping with error: %v\n", err)
 		return err
 	}
 
-	svr.waitForShutdown()
+	srv.waitForShutdown()
 
 	return nil
 }
-func (svr *server) signalHandler() {
+func (srv *server) signalHandler() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
 	select {
 	case sig := <-ch:
 		signal.Stop(ch)
 		var wg, wg1 sync.WaitGroup
-		wg.Add(svr.subLoopGroup.len())
+		wg.Add(srv.subLoopGroup.len())
 		wg1.Add(1)
-		svr.subLoopGroup.iterate(func(i int, lp *eventloop) bool {
+		srv.subLoopGroup.iterate(func(i int, lp *eventloop) bool {
 			sniffError(lp.poller.Trigger(func(_ interface{}) error {
 				wg.Done()
 				wg1.Wait()
@@ -378,33 +397,19 @@ func (svr *server) signalHandler() {
 			return true
 		})
 		wg.Wait()
-		svr.ln.fd = 0 // 修改监听fd让accept失效
+		srv.ln.fd = 0 // 修改监听fd让accept失效
 		wg1.Done()
 		// timeout context for shutdown
 		switch sig {
 		case syscall.SIGINT, syscall.SIGTERM:
 			// stop
 			log.Println("signal: stop")
-			svr.signalShutdown()
-			syscall.Kill(unix.Getpid(), syscall.SIGTERM)
+			srv.signalShutdown()
 			return
 		case syscall.SIGUSR1:
-			if svr.ln != nil {
+			if srv.ln != nil {
 				// reload
-				log.Println("signal: reload")
-				for _, c := range svr.connections {
-					if c != nil {
-						_ = c.loop.poller.Trigger(func(i interface{}) error {
-							if c.state==connStateOk {
-								svr.eventHandler.SignalReload(c)
-							}
-							return nil
-						},nil)
-					}
-				}
-
-
-				f, err := svr.ln.ln.(*net.TCPListener).File()
+				f, err := srv.ln.ln.(*net.TCPListener).File()
 				var args []string
 				if err == nil {
 					args = []string{"-graceful"}
@@ -415,16 +420,14 @@ func (svr *server) signalHandler() {
 				// put socket FD at the first entry
 				cmd.ExtraFiles = []*os.File{f}
 				cmd.Start()
-				svr.signalShutdown()
+				srv.signalShutdown()
 			}
 
 			return
 		}
-	case <-svr.close:
+	case <-srv.close:
 		log.Println("close gnet")
-		svr.close <- true
-		svr.signalShutdown()
-		syscall.Kill(unix.Getpid(), syscall.SIGTERM)
+		srv.signalShutdown()
 		return
 	}
 
@@ -436,4 +439,25 @@ func init() {
 	reload = flag.Bool("reload", false, "listen on fd open 3 (internal use only)")
 	graceful = flag.Bool("graceful", false, "listen on fd open 3 (internal use only)")
 	stop = flag.Bool("stop", false, "stop the server from pid")
+}
+func (srv *server) waitClose() {
+
+	var wg sync.WaitGroup
+	srv.connections.Range(func(key, value interface{}) bool {
+		c := value.(*conn)
+		wg.Add(1)
+		_ = c.loop.poller.Trigger(func(i interface{}) error {
+			if c != nil {
+				if c.state == connStateOk {
+					srv.eventHandler.SignalClose(c)
+				}
+			}
+
+			wg.Done()
+			return nil
+		}, nil)
+		return true
+	})
+	wg.Wait()
+
 }

@@ -3,6 +3,7 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//go:build linux || darwin || netbsd || freebsd || openbsd || dragonfly
 // +build linux darwin netbsd freebsd openbsd dragonfly
 
 package gnet
@@ -22,11 +23,13 @@ import (
 
 type eventloop struct {
 	idx            int             // loop index in the server loops list
-	svr            *server         // server in loop
+	srv            *server         // server in loop
 	codec          ICodec          // codec for TCP
 	packet         []byte          // read packet buffer
 	poller         *netpoll.Poller // epoll or kqueue
 	eventHandler   EventHandler    // user eventHandler
+	outChan        chan out
+	lazyChan       chan *conn
 	outclose       chan bool
 	udpSockets     map[int]*conn
 	pollAttachment *netpoll.PollAttachment
@@ -38,13 +41,13 @@ func (lp *eventloop) loopRun() {
 			fmt.Println(e)
 			debug.PrintStack()
 		}
-		if lp.idx == 0 && lp.svr.opts.Ticker {
-			close(lp.svr.ticktock)
+		if lp.idx == 0 && lp.srv.opts.Ticker {
+			close(lp.srv.ticktock)
 		}
-		lp.svr.signalShutdown()
+		lp.srv.signalShutdown()
 	}()
 
-	if lp.idx == 0 && lp.svr.opts.Ticker {
+	if lp.idx == 0 && lp.srv.opts.Ticker {
 		go lp.loopTicker()
 	}
 
@@ -52,9 +55,9 @@ func (lp *eventloop) loopRun() {
 }
 
 func (lp *eventloop) loopAccept(fd int) error {
-	if fd == lp.svr.ln.fd {
+	if fd == lp.srv.ln.fd {
 
-		if lp.svr.ln.pconn != nil {
+		if lp.srv.ln.pconn != nil {
 			return lp.loopUDPIn(fd)
 		}
 		nfd, sa, err := unix.Accept(fd)
@@ -65,21 +68,21 @@ func (lp *eventloop) loopAccept(fd int) error {
 			}
 			return err
 		}
-		if !lp.svr.Isblock {
+		if !lp.srv.Isblock {
 			if err := unix.SetNonblock(nfd, true); err != nil {
 				return err
 			}
 		}
-		if lp.svr.opts.TCPNoDelay {
+		if lp.srv.opts.TCPNoDelay {
 			if err := unix.SetsockoptInt(nfd, unix.IPPROTO_TCP, unix.TCP_NODELAY, 1); err != nil {
 				return err
 			}
 		}
 		//newlp:=lp
-		newlp := lp.svr.subLoopGroup.getbyfd(nfd)
+		newlp := lp.srv.subLoopGroup.getbyfd(nfd)
 		c := newTCPConn(nfd, newlp, sa)
-		if lp.svr.tlsconfig != nil {
-			if err = c.UpgradeTls(lp.svr.tlsconfig); err != nil {
+		if lp.srv.tlsconfig != nil {
+			if err = c.UpgradeTls(lp.srv.tlsconfig); err != nil {
 				return err
 			}
 		}
@@ -91,12 +94,15 @@ func (lp *eventloop) loopAccept(fd int) error {
 }
 
 func (lp *eventloop) loopOpen(c *conn) error {
-
+	lp.srv.connections.Store(c.fd, c)
 	if c.isClient {
 		return lp.loopOpenClient(c)
 	}
+
+	lp.srv.connWg.Add(1)
+
 	c.state = connStateOk
-	c.localAddr = lp.svr.ln.lnaddr
+	c.localAddr = lp.srv.ln.lnaddr
 	c.remoteAddr = socket.SockaddrToTCPOrUnixAddr(c.sa)
 	out, action := lp.eventHandler.OnOpened(c)
 	if out != nil {
@@ -124,11 +130,10 @@ func (lp *eventloop) loopIn(c *conn) (err error) {
 
 func (lp *eventloop) loopWake(i interface{}) error {
 	c := i.(*conn)
-	if co := lp.svr.connections[c.fd]; co != c {
-		return nil // ignore stale wakes.
+	if c.state == connStateOk {
+		return lp.handleAction(c, lp.eventHandler.React(nil, c))
 	}
-
-	return lp.handleAction(c,lp.eventHandler.React(nil, c) )
+	return nil
 }
 
 func (el *eventloop) loopTicker() {
@@ -151,7 +156,7 @@ func (el *eventloop) loopTicker() {
 		switch action {
 		case None:
 		case Shutdown:
-			el.svr.close <- true
+			el.srv.close <- true
 		}
 		if timer == nil {
 			timer = time.NewTimer(delay)
@@ -159,8 +164,8 @@ func (el *eventloop) loopTicker() {
 			timer.Reset(delay)
 		}
 		select {
-		case <-el.svr.close:
-			el.svr.close <- true
+		case <-el.srv.close:
+			el.srv.close <- true
 			return
 		case <-timer.C:
 		}
@@ -200,12 +205,7 @@ func (lp *eventloop) loopUDPIn(fd int) error {
 
 func (el *eventloop) addread(i interface{}) (err error) {
 	c := i.(*conn)
-	el.svr.connectionsLock.Lock()
-	for c.fd >= len(el.svr.connections) {
-		el.svr.connections = append(el.svr.connections, make([]*conn, len(el.svr.connections))...)
-	}
-	el.svr.connectionsLock.Unlock()
-	el.svr.connections[c.fd] = c
+
 	if c.pollAttachment == nil { // UDP socket
 		c.pollAttachment = netpoll.GetPollAttachment()
 		c.pollAttachment.FD = c.fd
@@ -220,10 +220,8 @@ func (el *eventloop) addread(i interface{}) (err error) {
 	}
 
 	if err = el.poller.AddRead(c.pollAttachment); err == nil {
-		err = socket.SetKeepAlivePeriod(c.fd, int(el.svr.opts.TCPKeepAlive.Seconds()))
+		err = socket.SetKeepAlivePeriod(c.fd, int(el.srv.opts.TCPKeepAlive.Seconds()))
 		return el.loopOpen(c)
-	} else {
-		el.svr.connections[c.fd] = nil
 	}
 	return err
 }
