@@ -18,7 +18,6 @@
 package netpoll
 
 import (
-	"fmt"
 	"os"
 	"runtime"
 	"sync/atomic"
