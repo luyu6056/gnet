@@ -2,6 +2,7 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//go:build linux || darwin || netbsd || freebsd || openbsd || dragonfly
 // +build linux darwin netbsd freebsd openbsd dragonfly
 
 package gnet
@@ -20,11 +21,13 @@ func (svr *server) acceptNewConnection(fd int) error {
 	}
 	if !svr.Isblock {
 		if err := unix.SetNonblock(nfd, true); err != nil {
+
 			return err
 		}
 	}
-	if svr.opts.TCPNoDelay {
+	if svr.opts.TCPNoDelay && svr.ln.addr == "tcp" {
 		if err := unix.SetsockoptInt(nfd, unix.IPPROTO_TCP, unix.TCP_NODELAY, 1); err != nil {
+
 			return err
 		}
 	}
@@ -35,5 +38,5 @@ func (svr *server) acceptNewConnection(fd int) error {
 			return err
 		}
 	}
-	return lp.poller.Trigger(lp.addread,c)
+	return lp.poller.Trigger(lp.addread, c)
 }

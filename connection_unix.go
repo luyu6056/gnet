@@ -93,6 +93,7 @@ func (c *conn) releaseTCP() {
 			c.loop.srv.connections.Delete(c.fd)
 			c.loop.poller.Delete(c.fd)
 
+			unix.Close(c.fd)
 			if c.inboundBuffer != nil {
 				c.inboundBuffer.Reset()
 				msgbufpool.Put(c.inboundBuffer)
@@ -319,15 +320,17 @@ out:
 	atomic.AddInt64(&c.flushWaitNum, -1)
 }
 
-// 在当前epoll事件中close
 func (c *conn) loopCloseConn(err error) {
 	if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
+		c.loop.poller.Trigger(func(i interface{}) error {
+			c.loop.eventHandler.OnClosed(c, err)
+			if c.tlsconn != nil { //关闭前通知tls关闭
+				c.tlsconn.CloseWrite()
+			}
+			c.loop.lazyChan <- c
+			return nil
+		}, nil)
 
-		c.loop.eventHandler.OnClosed(c, err)
-		if c.tlsconn != nil { //关闭前通知tls关闭
-			c.tlsconn.CloseWrite()
-		}
-		c.loop.lazyChan <- c
 	}
 	return
 }
@@ -357,23 +360,16 @@ func (c *conn) lazywrite() {
 			}
 			c.outboundBuffer.Shift(n)
 		}
-		if atomic.CompareAndSwapInt32(&c.state, connStateCloseReady, connStateClosed) { //彻底删除close的c
-
-			for i := c.flushWaitNum; i > 0; i-- {
-				select {
-				case c.flushWait <- 0:
-				default:
-				}
-			}
-			c.releaseTCP()
-		} else {
-			for i := c.flushWaitNum; i > 0; i-- {
-				select {
-				case c.flushWait <- c.outboundBuffer.Len():
-				default:
-				}
+		for i := c.flushWaitNum; i > 0; i-- {
+			select {
+			case c.flushWait <- c.outboundBuffer.Len():
+			default:
 			}
 		}
+		if atomic.CompareAndSwapInt32(&c.state, connStateCloseReady, connStateClosed) { //彻底删除close的c
+			c.releaseTCP()
+		}
+
 	}
 
 }

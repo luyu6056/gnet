@@ -3,8 +3,11 @@
 
 package gnet
 
-import "github.com/luyu6056/gnet/pkg/pool/byteslice"
+import (
+	"github.com/luyu6056/gnet/pkg/pool/byteslice"
+)
 import "time"
+
 type out struct {
 	conn *stdConn
 	data []byte
@@ -22,7 +25,7 @@ func (el *eventloop) loopOut() {
 			case o := <-el.outChan:
 				c, data := o.conn, o.data
 				if c.outboundBuffer != nil {
-					c.conn.SetWriteDeadline(time.Now().Add(time.Duration(c.writetimeout)*time.Second))
+					c.conn.SetWriteDeadline(time.Now().Add(time.Duration(c.writetimeout) * time.Second))
 					if c.tlsconn != nil {
 						c.tlsconn.Write(data)
 						c.conn.SetWriteDeadline(time.Now().Add(time.Second))
@@ -44,12 +47,12 @@ func (el *eventloop) loopOut() {
 						c.ctx = nil
 						c.localAddr = nil
 						c.remoteAddr = nil
-						if c.inboundBuffer!=nil{
+						if c.inboundBuffer != nil {
 							c.inboundBuffer.Reset()
 							msgbufpool.Put(c.inboundBuffer)
 							c.inboundBuffer = nil
 						}
-						if c.outboundBuffer!=nil{
+						if c.outboundBuffer != nil {
 							c.outboundBuffer.Reset()
 							msgbufpool.Put(c.outboundBuffer)
 							c.outboundBuffer = nil

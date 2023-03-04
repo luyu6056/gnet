@@ -60,7 +60,7 @@ type stdConn struct {
 	readframe                     func() []byte
 	flushWait                     chan int
 	flushWaitNum                  int64
-	writetimeout   int
+	writetimeout                  int
 }
 
 var msgbufpool = sync.Pool{New: func() interface{} {
@@ -78,9 +78,9 @@ func newTCPConn(conn net.Conn, lp *eventloop) *stdConn {
 		outboundBuffer: msgbufpool.Get().(*tls.MsgBuffer),
 		flushWait:      make(chan int),
 		state:          connStateOk,
-		writetimeout: lp.srv.opts.WriteTimeOut,
+		writetimeout:   lp.srv.opts.WriteTimeOut,
 	}
-	c.inboundBufferWrite =  func(b []byte) (int, error){
+	c.inboundBufferWrite = func(b []byte) (int, error) {
 		return c.inboundBuffer.Write(b)
 	}
 	c.readframe = c.read
@@ -103,12 +103,11 @@ func newUDPConn(lp *eventloop, localAddr, remoteAddr net.Addr) *stdConn {
 func (c *stdConn) releaseUDP() {
 	c.ctx = nil
 	c.localAddr = nil
-	if c.inboundBuffer!=nil{
+	if c.inboundBuffer != nil {
 		c.inboundBuffer.Reset()
 		msgbufpool.Put(c.inboundBuffer)
 		c.inboundBuffer = nil
 	}
-
 
 }
 func (c *stdConn) tlsread() (frame []byte) {
@@ -195,7 +194,7 @@ func (c *stdConn) AsyncWrite(buf []byte) error {
 	return nil
 }
 
-//用于直出不编码的出口，tls调用
+// 用于直出不编码的出口，tls调用
 func (c *stdConn) Write(buf []byte) (n int, err error) {
 	data := byteslice.Get(len(buf))
 	copy(data, buf)
@@ -204,6 +203,7 @@ func (c *stdConn) Write(buf []byte) (n int, err error) {
 }
 
 func (c *stdConn) WriteNoCodec(buf []byte) error {
+
 	c.Write(buf)
 	return nil
 }
@@ -236,7 +236,7 @@ func (c *stdConn) UpgradeTls(config *tls.Config) (err error) {
 		c.inboundBufferWrite = c.tlsconn.RawWrite
 		c.readframe = c.tlsread
 		//很有可能握手包在UpgradeTls之前发过来了，这里把inboundBuffer剩余数据当做握手数据处理
-		if c.inboundBuffer!=nil && c.inboundBuffer.Len() > 0 {
+		if c.inboundBuffer != nil && c.inboundBuffer.Len() > 0 {
 			c.tlsconn.RawWrite(c.inboundBuffer.Bytes())
 			c.inboundBuffer.Reset()
 			if err := c.tlsconn.Handshake(); err != nil {
@@ -273,6 +273,6 @@ out:
 	}
 	atomic.AddInt64(&c.flushWaitNum, -1)
 }
-func (c *stdConn)SetWriteDeadline(i int64)  {
-	c.conn.SetWriteDeadline(time.Unix(i,0))
+func (c *stdConn) SetWriteDeadline(i int64) {
+	c.conn.SetWriteDeadline(time.Unix(i, 0))
 }

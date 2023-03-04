@@ -235,9 +235,6 @@ func (srv *server) stop() {
 }
 
 // tcp平滑重启，开启ReusePort有效，关闭ReusePort则会造成短暂的错误
-var (
-	reload, graceful, stop *bool
-)
 
 func serve(eventHandler EventHandler, addr string, options *Options) error {
 	srv := new(server)
@@ -246,17 +243,25 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 	//efer ln.close()
 
 	ln.network, ln.addr = parseAddr(addr)
-	if ln.network == "unix" {
+	if len(ln.network) >= 4 && ln.network[:4] == "unix" {
 		sniffError(os.RemoveAll(ln.addr))
 	}
-	var err error
+	var (
+		reload, graceful, stop bool
+	)
+	if options.Graceful {
+		flag.BoolVar(&reload, "reload", false, "listen on fd open 3 (internal use only)")
+		flag.BoolVar(&graceful, "graceful", false, "listen on fd open 3 (internal use only)")
+		flag.BoolVar(&stop, "stop", false, "stop the server from pid")
+	}
 
+	var err error
 	if ln.network == "udp" {
 		ln.pconn, err = net.ListenPacket(ln.network, ln.addr)
 	} else {
 		flag.Parse()
-		if stop != nil && *stop {
-			b, err := ioutil.ReadFile("./pid")
+		if stop {
+			b, err := ioutil.ReadFile("./" + options.PidName)
 			if err == nil {
 				pidstr := string(b)
 				pid, err := strconv.Atoi(pidstr)
@@ -270,8 +275,8 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 			log.Println("stop server fail or server not start")
 			return nil
 		}
-		if reload != nil && *reload {
-			b, err := ioutil.ReadFile("./pid")
+		if reload {
+			b, err := ioutil.ReadFile("./" + options.PidName)
 			if err == nil {
 				pidstr := string(b)
 				pid, err := strconv.Atoi(pidstr)
@@ -289,7 +294,7 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 				}
 			}
 		}
-		if graceful != nil && *graceful {
+		if graceful {
 			f := os.NewFile(3, "")
 			ln.ln, err = net.FileListener(f)
 			f.Close()
@@ -299,13 +304,15 @@ func serve(eventHandler EventHandler, addr string, options *Options) error {
 
 		if err == nil {
 			pid := unix.Getpid()
-			f, err := os.OpenFile("./pid", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0644)
+			f, err := os.OpenFile("./"+options.PidName, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0644)
 			if err != nil {
 				return err
 			}
 			f.WriteString(strconv.Itoa(int(pid)))
 			f.Close()
-			go srv.signalHandler()
+			if options.Graceful {
+				go srv.signalHandler()
+			}
 		}
 
 	}
@@ -432,14 +439,7 @@ func (srv *server) signalHandler() {
 	}
 
 }
-func init() {
-	defer func() {
-		recover()
-	}()
-	reload = flag.Bool("reload", false, "listen on fd open 3 (internal use only)")
-	graceful = flag.Bool("graceful", false, "listen on fd open 3 (internal use only)")
-	stop = flag.Bool("stop", false, "stop the server from pid")
-}
+
 func (srv *server) waitClose() {
 
 	var wg sync.WaitGroup

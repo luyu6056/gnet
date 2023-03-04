@@ -61,7 +61,7 @@ func unixDialTcp(tcpAddr *net.TCPAddr) (int, error) {
 
 func (lp *eventloop) loopOpenClient(c *conn) error {
 	c.state = connStateOk
-
+	lp.srv.connWg.Add(1)
 	out, action := lp.eventHandler.OnOpened(c)
 	if out != nil {
 		c.write(out)

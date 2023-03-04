@@ -17,6 +17,7 @@ type Option func(opts *Options)
 func initOptions(options ...Option) *Options {
 	opts := new(Options)
 	opts.WriteTimeOut = math.MaxInt32
+	opts.PidName = "pid"
 	for _, option := range options {
 		option(opts)
 	}
@@ -48,6 +49,10 @@ type Options struct {
 	TCPNoDelay bool
 
 	WriteTimeOut int
+
+	PidName string
+
+	Graceful bool
 }
 
 // WithOptions sets up all options.
@@ -92,14 +97,14 @@ func WithCodec(codec ICodec) Option {
 	}
 }
 
-//设置为阻塞式
+// 设置为阻塞式
 func WithBlock(block bool) Option {
 	return func(opts *Options) {
 		opts.Isblock = block
 	}
 }
 
-//开启tls模式
+// 开启tls模式
 func WithTls(tlsconfig *tls.Config) Option {
 	return func(opts *Options) {
 		opts.Tlsconfig = tlsconfig
@@ -112,9 +117,20 @@ func WithTCPNoDelay(b bool) Option {
 	}
 }
 
-//单位秒
+// 单位秒
 func WithWriteTimeOut(i int) Option {
 	return func(opts *Options) {
 		opts.WriteTimeOut = i
+	}
+}
+
+func WithPidName(name string) Option {
+	return func(opts *Options) {
+		opts.PidName = name
+	}
+}
+func WithGraceful(graceful bool) Option {
+	return func(opts *Options) {
+		opts.Graceful = graceful
 	}
 }

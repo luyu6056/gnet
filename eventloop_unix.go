@@ -55,6 +55,7 @@ func (lp *eventloop) loopRun() {
 }
 
 func (lp *eventloop) loopAccept(fd int) error {
+
 	if fd == lp.srv.ln.fd {
 
 		if lp.srv.ln.pconn != nil {

@@ -3,6 +3,7 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
+//go:build windows
 // +build windows
 
 package gnet
@@ -118,7 +119,8 @@ func serve(eventHandler EventHandler, addr string, options *Options) (err error)
 	var ln listener
 	defer ln.close()
 	ln.network, ln.addr = parseAddr(addr)
-	if ln.network == "unix" {
+
+	if len(ln.network) >= 4 && ln.network[:4] == "unix" {
 		sniffError(os.RemoveAll(ln.addr))
 	}
 
