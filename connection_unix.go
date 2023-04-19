@@ -324,9 +324,6 @@ func (c *conn) loopCloseConn(err error) {
 	if atomic.CompareAndSwapInt32(&c.state, connStateOk, connStateCloseReady) {
 		c.loop.poller.Trigger(func(i interface{}) error {
 			c.loop.eventHandler.OnClosed(c, err)
-			if c.tlsconn != nil { //关闭前通知tls关闭
-				c.tlsconn.CloseWrite()
-			}
 			c.loop.lazyChan <- c
 			return nil
 		}, nil)
@@ -367,6 +364,9 @@ func (c *conn) lazywrite() {
 			}
 		}
 		if atomic.CompareAndSwapInt32(&c.state, connStateCloseReady, connStateClosed) { //彻底删除close的c
+			if c.tlsconn != nil { //关闭前通知tls关闭
+				c.tlsconn.CloseWrite()
+			}
 			c.releaseTCP()
 		}
 
