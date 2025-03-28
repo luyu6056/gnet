@@ -30,6 +30,13 @@ type Options struct {
 	//0 will be runtime.NumCPU().
 	LoopNum int
 
+	// Multicore indicates whether the engine will be effectively created with multi-cores, if so,
+	// then you must take care with synchronizing memory between all event callbacks, otherwise,
+	// it will run the engine with single thread. The number of threads in the engine will be
+	// automatically assigned to the number of usable logical CPUs that can be leveraged by the
+	// current process.
+	Multicore bool
+
 	// ReusePort indicates whether to set up the SO_REUSEPORT socket option.
 	ReusePort bool
 
@@ -66,6 +73,11 @@ func WithOptions(options Options) Option {
 func WithLoopNum(n int) Option {
 	return func(opts *Options) {
 		opts.LoopNum = n
+	}
+}
+func WithMulticore(multicore bool) Option {
+	return func(opts *Options) {
+		opts.Multicore = multicore
 	}
 }
 
